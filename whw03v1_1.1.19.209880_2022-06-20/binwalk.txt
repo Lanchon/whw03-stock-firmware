@@ -1,0 +1,10 @@
+
+DECIMAL       HEXADECIMAL     DESCRIPTION
+--------------------------------------------------------------------------------
+0             0x0             Flattened device tree, size: 2674760 bytes, version: 17
+228           0xE4            Linux kernel ARM boot executable zImage (little-endian)
+14119         0x3727          xz compressed data
+14340         0x3804          xz compressed data
+2633852       0x28307C        Flattened device tree, size: 39601 bytes, version: 17
+8388608       0x800000        Linux EXT filesystem, blocks count: 116736, image size: 119537664, rev 0.0, ext4 filesystem data, UUID=e955e306-3636-4a64-ac5a-47f91c251c25
+
