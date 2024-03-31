@@ -1,0 +1,10 @@
+
+DECIMAL       HEXADECIMAL     DESCRIPTION
+--------------------------------------------------------------------------------
+0             0x0             Flattened device tree, size: 2673680 bytes, version: 17
+228           0xE4            Linux kernel ARM boot executable zImage (little-endian)
+14119         0x3727          xz compressed data
+14340         0x3804          xz compressed data
+2634492       0x2832FC        Flattened device tree, size: 37882 bytes, version: 17
+6291456       0x600000        UBI erase count header, version: 1, EC: 0x0, VID header offset: 0x800, data offset: 0x1000
+
