@@ -1,0 +1,227 @@
+#!/usr/bin/lua
+--
+-- Copyright (c) 2018, Belkin Inc. All rights reserved.
+--
+-- -*- lua -*-
+
+opts     = {} -- This needs to be global
+
+nutil    = require 'nodes.util'
+cli      = require "cliargs"
+
+-- Harvest some system information
+local prog_name = string.match( arg[0], ".*/(.*)" )
+
+debout  = nutil.debout
+verbout = nutil.verbout
+errout  = nutil.errout
+
+function parse_args( prog_name )
+   -- Set up command line options
+   cli:set_name( prog_name )
+   cli:set_description( 'Run Thrulay test, post-processing results'    )
+   cli:option( "-l, --low-drops=#",    "# of low samples to drop",  0  )
+   cli:option( "-r, --ramp=#",         "# initial samples to drop", 0  )
+   cli:option( "-t, --tests=#",        "# of tests to run",         3  )
+   cli:option( "-p, --port=#",         "server port",            5003  )
+   cli:flag(   "-d, --debug",          "Show debugging output", false  )
+   cli:flag(   "-s, --shell",          "Print shell eval format",false )
+   cli:flag(   "-v, --verbose",        "Be verbose",            false  )
+   cli:flag(   "-h, --help",           "This help"                     )
+   cli:argument( 'host', 'Run test to this host' )
+   local args, err = cli:parse()
+
+   if not args and err then
+      print( err )
+      os.exit(1)
+   else
+      local opts = {
+         debug     = not not args.debug,
+         host      = args.host,
+         shell     = not not args.shell,
+         ramp_up   = tonumber( args.ramp ),
+         low_drops = tonumber( args["low-drops"] ),
+         port      = tonumber( args.port ),
+         tests     = args.tests,
+         verbose   = not not args.verbose,
+      }
+      -- If debug is set, dump out the options now.  Note: we use
+      -- errout instead of debout because the global debug flag isn't
+      -- set until we return opts to our caller.
+      if opts.debug then
+         errout( cli.name .. " options:" )
+         for k,v in pairs( opts ) do
+            errout( string.format( "%12s: (%s)", k, tostring( v )))
+         end
+      end
+      return opts
+   end
+end
+
+function run_thrulay( opts )
+   local cmd_buff = { "thrulay" }
+
+   if opts.host == nil then error "Need host" end
+   table.insert( cmd_buff, "-v" )
+   table.insert( cmd_buff, "-p "..tostring(opts.port) )
+   table.insert( cmd_buff, "-t "..tostring(opts.tests) )
+   table.insert( cmd_buff, opts.host )
+   local cmd = table.concat( cmd_buff, ' ' )
+
+   debout( "Executing '%s'", cmd )
+   local fh = io.popen( cmd, "r" )
+   local raw, pruned = {}, {}
+   for line in fh:lines() do
+      table.insert( raw, line )
+      if line:sub( 1, 5 ) == " ( 0)" then
+         table.insert( pruned, line )
+      end
+   end
+   if #raw == 0 then error( "Unable to get data from Thrulay" ) end
+   return pruned, raw
+end
+
+function parse_thrulay_output( toutput )
+   local result = {}
+   local begins, ends, mbps,delay, jitter
+   local min_mbps, avg_mbps, max_mbps
+
+   local pat = ("%s+(%S+)"):rep(8)
+   for i,line in ipairs( toutput ) do
+      begins, ends, mbps, delay, jitter,
+      min_mbps, avg_mbps, max_mbps = line:match( pat, 6 )
+      table.insert( result,
+                    { mbps     = tonumber( mbps ),
+                      delay    = tonumber( delay ),
+                      jitter   = tonumber( jitter ),
+                      min_mbps = tonumber( min_mbps ),
+                      avg_mbps = tonumber( avg_mbps ),
+                      max_mbps = tonumber( max_mbps ) })
+   end
+
+   return result
+end
+
+function find_lowest( t, field )
+   local lowest_index = -1
+   local current_lowest = math.huge
+   for i, record in ipairs( t ) do
+      local candidate = record[field]
+      if record[field] < current_lowest then
+         current_lowest = candidate
+         lowest_index = i
+      end
+   end
+   return lowest_index
+end
+
+function drop_lowest( data, num_to_drop )
+   local pruned = {}
+   if #data > num_to_drop then
+      pruned = data
+      for i = 1,num_to_drop do
+         table.remove( pruned, find_lowest( pruned, "mbps" ))
+      end
+   end
+   return pruned
+end
+
+function clone_record( tdata, index )
+   local clone = {}
+   for k,v in pairs( tdata[index] ) do
+      clone[k] = v
+   end
+   return clone
+end
+
+function average_thrulay_records( tdata )
+   local fields_to_average = { "jitter", "mbps", "delay",
+                               "min_mbps", "avg_mbps", "max_mbps" }
+   local av = {}
+   local count = #tdata
+   if count >= 1 then
+      av = clone_record( tdata, 1 )
+   end
+   if count > 1 then
+      for i=2,count do
+         for _,k in ipairs( fields_to_average ) do
+            av[k] = av[k] + tdata[i][k]
+         end
+      end
+      for k,v in pairs( av ) do
+         av[k] = v / count
+      end
+   end
+   return av
+end
+
+local record_headers = [[
+        Mbps       Delay     Jitter    Min Mbps   Avg Mbps   Max Mbps
+      --------   --------   --------   --------   --------   --------]]
+
+function dump_trecord( i, record, out )
+   out = out or io.stderr
+   local fmt = "%2d:"..("   %8.3f"):rep(6).."\n"
+   out:write( fmt:format( i, record.mbps, record.delay, record.jitter,
+                          record.min_mbps, record.avg_mbps, record.max_mbps ))
+end
+
+function dump_tdata( heading, tdata )
+   errout( heading )
+   errout( record_headers )
+
+   for i, record in ipairs( tdata ) do
+      dump_trecord( i, record )
+   end
+end
+
+function _main()
+   local status = 0
+   opts = parse_args( prog_name )
+
+   local toutput,raw = run_thrulay( opts )
+   if opts.debug then
+      errout( "Thrulay output: " )
+      errout( table.concat( toutput, "\n" ))
+      errout( "Raw output:" )
+      errout( table.concat( raw, "\n" ))
+   end
+
+   local cooked = parse_thrulay_output( toutput )
+   debout( "Records parsed: %d", #cooked )
+   if opts.debug then dump_tdata( "\nCooked:", cooked ) end
+
+   local pruned = drop_lowest( cooked, opts.low_drops )
+   if opts.debug then dump_tdata( "\nPruned:", pruned ) end
+
+   local averages = average_thrulay_records( pruned )
+   if opts.debug then
+      debout( "\nAverages:" )
+      debout( record_headers )
+      dump_trecord( 0, averages )
+   end
+   if opts.verbose then
+      errout( record_headers )
+      dump_trecord( 0, averages, io.stdout )
+   elseif opts.shell then
+      print( ("MBPS=%f RTT=%f JITTER=%f MIN_MBPS=%f AVG_MBPS=%f MAX_MBPS=%f"):format(
+            averages.mbps, averages.delay, averages.jitter,
+            averages.min_mbps, averages.avg_mbps, averages.max_mbps
+      ))
+   else
+      print( ("%f,%f,%f,%f,%f,%f"):format(
+            averages.mbps, averages.delay, averages.jitter,
+            averages.min_mbps, averages.avg_mbps, averages.max_mbps
+      ))
+   end
+   return 0
+end
+
+ok, result = pcall( _main )
+
+if not ok then
+   errout( "%s: Error: %s", prog_name, result )
+   os.exit( 1 )
+else
+   os.exit( result )
+end

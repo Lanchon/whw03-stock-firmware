@@ -1,0 +1,122 @@
+#!/bin/sh
+
+source /etc/init.d/ulog_functions.sh
+
+PROG_NAME="$(basename $0)"
+NOTIFS_ENABLED_VAR="notification::enabled"
+NOTIFS_ENABLED="$(syscfg get $NOTIFS_ENABLED_VAR)"
+
+logstatus() {
+    ARGS="$(printf "$@")"
+    ulog ${PROG_NAME} STATUS "$ARGS"
+}
+
+logerr() {
+    ARGS="$(printf "$@")"
+    ulog ${PROG_NAME} ERROR "$ARGS"
+}
+
+VARS="$(syscfg show |
+        grep node-off |
+        sed -r "s/^[^:]+:://g" |
+        while read i; do
+            echo "$i;"
+        done)"
+
+logstatus "Processing Node Slave offline messages"
+eval $VARS
+
+if [ "$debug" = "1" ]; then
+    echo "min_offline_time: $min_offline_time"
+    echo "enabled: $enabled"
+    echo "enable_cloud: $enable_cloud"
+    echo "$NOTIFS_ENABLED_VAR: $NOTIFS_ENABLED"
+    echo "debug: $debug"
+    echo "cache_dir: $cache_dir"
+fi
+
+DEVINFO_PATH="${cache_dir}/$(dirname $(omsg-conf -a path DEVINFO))"
+logstatus "DEVINFO_PATH: $DEVINFO_PATH"
+
+count_offline_reports() {
+    find $cache_dir/master \
+         -type f \
+         -name 'status.offline' | wc -l
+}
+
+enumerate_ripe_offline_reports() {
+    find $cache_dir/master \
+         -type f \
+         -mmin +${min_offline_time} \
+         -name 'status.offline'
+}
+
+cull_reports() {
+    for i in $*; do
+        UUID="$(jsonparse uuid < $i)"
+        DEVINFO=${DEVINFO_PATH}/$UUID
+        
+        # If device is removed from network, avoid publishing offline report to cloud
+        devicedb_client -c getDeviceById ${UUID}
+        if [ "$?" = "1" ]; then
+            rm $i
+        else
+            if [ "$i" -nt "$DEVINFO" ]; then
+                echo $i
+            else
+                logstatus "Ignoring obsolete $i"
+                rm $i
+            fi
+        fi
+    done
+}
+
+logstatus "Total unprocessed offline reports: %s" "$(count_offline_reports)"
+
+REPORTS="$(enumerate_ripe_offline_reports)"
+if [ -z "$REPORTS" ]; then
+    logstatus "No ripe offline reports as of $(date)"
+    exit 0
+else
+    logstatus "Ripe reports found: %s" "$REPORTS"
+fi
+
+
+VALID_REPORTS="$(cull_reports $REPORTS)"
+if [ -z "$VALID_REPORTS" ]; then
+    logstatus "No valid reports"
+    exit 0
+else
+    logstatus "Valid reports: %s" "$VALID_REPORTS"
+fi
+
+for REPORT in $VALID_REPORTS; do
+    [ "$debug" = "1" ] && logstatus "Processing %s:" "$REPORT"
+    # Note there are 2 syscfg variables controlling cloud notification:
+    #
+    # node-off::enable_cloud is a mostly debugging variable used only
+    # be node-off and its' developers.  When it is not 1, the
+    # notification is not sent to the cloud and it is *not garbage
+    # collected*.
+    #
+    # notification::enabled (stored in NOTIFS_ENABLED) is the user
+    # controllable flag.  When this is not 1 then notifications are
+    # not sent and the ARE garbage collected.
+    if [ "$NOTIFS_ENABLED" = "1" ]; then
+        if [ "$enable_cloud" = "1" ]; then
+            if pub_tocloud_offline_node $REPORT ; then
+                logstatus "Removing processed report %s" "$REPORT"
+                rm "$REPORT"
+            fi
+        else
+            logstatus "Not sending report; cloud notification disabled (enable_cloud:  '%s')" \
+                      "$enable_cloud"
+        fi
+    else
+        logstatus "Not sending report; user chose no notifications (%s:  '%s')" \
+                  "$NOTIFS_ENABLED_VAR" "$NOTIFS_ENABLED"
+        rm "$REPORT"
+    fi
+done
+
+[ "$debug" = "1" ] && echo "Done"

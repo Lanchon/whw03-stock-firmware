@@ -1,0 +1,185 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+-- nb_report - Generate JSON formatted Wi-Fi neighbor information.
+-- The data originates in the WLAN neighbor files in the omsg shadow
+-- directory.
+--
+-- Copyright (c) 2017, Belkin Inc. All rights reserved.
+--
+
+-- Keep prog_name global for use in error messages
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+-- Keep opts global for access by external modules
+opts  = { prog_name = prog_name }
+
+cli   = require "cliargs"
+nutil = require 'nodes.util'
+json  = require 'libhdkjsonlua'
+
+local join_dirs = nutil.join_dirs
+local debout    = nutil.debout
+local errout    = nutil.errout
+
+local function run(cmd)
+   return nutil.chomp( io.popen(cmd):read("*a"))
+end
+
+local BASE = run( 'syscfg get subscriber::file_prefix' )
+local WLAN_BASE = join_dirs( BASE, "WLAN")
+local DEVINFO_BASE = join_dirs( BASE, "DEVINFO")
+
+-- Set up command line options
+cli:set_name( prog_name )
+cli:flag( "-j,--json",    "Format output as JSON" )
+cli:flag( "-d,--debug",   "Show debugging output" )
+cli:flag( "-v,--verbose", "Be verbose"            )
+
+-- Some helper functions
+
+-- Is the provided path a directory?
+local function is_dir( path )
+   return lfs.attributes( path, 'mode' ) == 'directory'
+end
+
+-- Recursively dump a table to stderr for debug output
+function dumpt(t, level)
+   function spaces(n)
+      return (" "):rep( n )
+   end
+   local level = level or 0
+   local inset = spaces( level )
+   for k,v in pairs(t) do
+      if type( v ) == 'table' then
+         errout( inset..k..":" )
+         dumpt( v, level + 4 )
+      else
+         errout( ("%s%10s: '%s'"):format( inset, k, tostring(v)))
+      end
+   end
+end
+
+-- Load the DEVINFO for a given UUID
+function get_devinfo( uuid )
+   local di = nil
+
+   local di_path = join_dirs( DEVINFO_BASE, uuid )
+   if is_dir( di_path ) then
+      di = nutil.json_file_to_table( di_path )
+   end
+   return di
+end
+
+--! @brief Load all WLAN neighbor JSON data.
+--! @return A possibly empty table.
+function gather_nb_data()
+   local nb = {}
+   local nb_fname = "neighbors"
+   if is_dir( WLAN_BASE ) then
+      for node_name in lfs.dir( WLAN_BASE ) do
+         if node_name ~= '.' and node_name ~= '..' then
+            local node_dir = join_dirs( WLAN_BASE, node_name )
+            if is_dir( node_dir ) then
+               local nb_path = join_dirs( node_dir, nb_fname )
+               local raw_data = nutil.json_file_to_table( nb_path )
+               if raw_data then
+                  raw_data.type = 'status'
+                  local di = get_devinfo( node_name )
+                  if di and di.data and di.data.mode then
+                     raw_data.mode = di.data.mode
+                  end
+                  table.insert( nb, raw_data )
+               end
+            end
+         end
+      end
+   end
+
+   return nb
+end
+
+-- Parse command line options.
+-- Returns a table of attribute/value pairs embodying the options
+local function parseArgs()
+   local args, err = cli:parse()
+
+   if not args and err then
+      -- If err starts with "Usage:" then it not really an error, it's
+      -- just the result of the user requesting Help
+      if string.sub( err, 1, 6 ) ~= 'Usage:' then
+         -- Real error.  We're writing to stdout for consistency
+         -- (because we can't force cli:print_help to to so).
+         print( cli.name .. ": " .. err )
+         cli:print_help()
+      else
+         -- Just "-h" or "--help"
+         print( err )
+      end
+      os.exit(1)
+   else
+      local opts = {
+         debug   = not not args.debug,
+         verbose = not not args.verbose,
+         json    = args.json,
+      }
+      -- If debug is set, dump out the options now
+      if opts.debug then
+         for k,v in pairs( opts ) do
+            print( string.format( "%12s: '%s'", k, tostring( v )))
+         end
+      end
+      return opts
+   end
+end
+
+
+local function _main()
+   local opts = parseArgs()
+   local data = gather_nb_data()
+   local status = 0
+
+   if opts.json then
+      local nb = { neighbors = {} }
+      if data then
+         nb.neighbors = data
+         if opts.debug then
+            debout( "raw data: " )
+            dumpt( data )
+         end
+      end
+      debout( "Formatted:" )
+      print( json.stringify( nb ))
+   else
+      local shaown = false
+      print     "    Type       Node (MAC)     Neighbor BSSID    Sig.  Chan."
+      print     "------------  ------------   -----------------  ----  -----"
+      local FMT="%12s  "..     "%12s   "..   "%17s   "..        "%3d    %3d  "
+      for _,show in ipairs{ "master", "slave", "unconfigured" } do
+         for _,node in ipairs( data ) do
+            shown = false
+            if node.type == 'status' then
+               local nuuid, ntype = node.uuid:sub( 25 ), node.data.mode
+               if ntype == show then
+                  for _,nb in ipairs( node.data.neighbor ) do
+                     print( FMT:format( ntype, nuuid, nb.bssid, nb.rssi, nb.channel ))
+                     nuuid, ntype, shown = "", "", true
+                  end
+               end
+            end
+            if shown then print"" end
+         end
+      end
+   end
+
+   return status
+end
+
+-- Run main in protected mode to catch any unhandled exceptions
+local ok,status = pcall( _main )
+
+-- If there was an exception, display its' error text
+if not ok then
+   io.stderr:write( string.format( "Error: %s", tostring( status )))
+end
+
+os.exit( status )

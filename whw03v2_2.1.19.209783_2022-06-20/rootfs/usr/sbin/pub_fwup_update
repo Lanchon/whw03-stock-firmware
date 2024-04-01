@@ -1,0 +1,38 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publlsh FWUPD: Master's update request
+#
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+UUID="$1"
+validate UUID
+
+PUB_TOPIC="network/${UUID}/FWUPD/cmd"
+validate PUB_TOPIC
+
+if [ $DEBUG ];then
+    echo "$0 Options:"
+    echo "   BIND_ADDR: '$BIND_ADDR'"
+    echo "   HOST_PORT: '$HOST_PORT'"
+    echo "   HOST_ADDR: '$HOST_ADDR'"
+    echo "   TOPIC:     '$PUB_TOPIC'"
+fi
+
+LAN_IF="$(syscfg get lan_ifname)"
+validate LAN_IF
+
+IP="$(if_to_ip $LAN_IF)"
+validate IP
+
+shift
+
+mk_infra_payload \
+    -t cmd \
+    -u "$UUID" \
+    $@ | \
+       publish "$PUB_TOPIC"

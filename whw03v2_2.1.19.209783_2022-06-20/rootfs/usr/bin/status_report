@@ -1,0 +1,81 @@
+#!/bin/sh
+#
+# Generate a simple report on based on files named "status" that
+# contain an A/V pair named "status"
+#
+
+PROGNAME=$(basename $0)
+DEFAULT_SLEEP_TIME=30
+VERSION="0.1.1"
+
+SLEEP_TIME=$DEFAULT_SLEEP_TIME
+# LOOP unset
+
+usage() {
+    printf "Usage:\n"
+    printf "    \t%s [-h] [-l] [-t{timeout}] [-v]\n" $PROGNAME
+    echo "Where:"
+    printf "  -l\t\tContinuously loop generating report\n"
+    printf "  -t{time}\tTime between report loops (default %d seconds)\n" $DEFAULT_SLEEP_TIME
+    printf "  -v\t\tShow version\n"
+    printf "  -h\t\tThis help\n"
+    printf "\n"
+    printf " Note: -t{time} has no effect without -l.\n"
+}
+
+fail() {
+    echo "$*" >&2
+    usage
+    exit 1
+}
+
+while getopts ":hlt:v" opt;do
+    case $opt in
+        l)  LOOP=1  ;;
+        t)  SLEEP_TIME="$OPTARG" ;;
+        v)  printf "%s version %s\n" "$PROGNAME" "$VERSION" ; exit 0 ;;
+        h)  usage ; exit 0 ;;
+        ?)  fail "Invalid option: -$OPTARG" ;;
+        :)  fail "Option -${OPTARG} needs an argument." ;;
+    esac
+done
+shift $((OPTIND-1))
+
+STATUS_TAG='"status" *:"'
+DIR=/tmp/msg
+
+# $1 path to status file
+report_item() {
+    NAME="$(echo $1 | sed 's,/status$,,' | cut -f4- -d/ | tr '/' ' ')"
+    TS="$(stat -c '%y' $1 | cut -f1 -d.)"
+    STATUS="$(grep "$STATUS_TAG" $1|cut -f4 -d\")"
+    [ -z "$STATUS" ] && STATUS="exists"
+
+    printf "%s %s on %s\n" "$NAME" "$STATUS" "$TS"
+}
+
+if [ ! -d $DIR ]; then
+    echo "No status to report"
+    exit 0
+fi
+
+FILES=$(find $DIR -name status)
+STATUS_FILES=$(grep -l "$STATUS_TAG" $FILES)
+
+report() {
+    for i in $FILES; do
+        report_item "$i"
+    done
+}
+
+if [ $LOOP ]; then
+    echo "(Reporting all status every $SLEEP_TIME seconds; ^C to stop)"
+    while true; do
+        echo "As of $(date):"
+        report
+        echo
+        sleep $SLEEP_TIME
+    done
+else
+    report
+fi

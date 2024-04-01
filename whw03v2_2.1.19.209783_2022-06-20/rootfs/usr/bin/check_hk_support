@@ -1,0 +1,44 @@
+#!/usr/bin/lua
+--
+-- This script checks the Homekit support flag (HKSupport) in the devinfo data for a given Node,
+-- and sets the respective syscfg variable (<uuid>::lrhk::hk_support), accordingly.
+-- The flag cannot be stored in Device DB, so it's stored in syscfg for persistence.
+--
+-- If the flag is not present in the devinfo data, the respective syscfg variable is unset.
+--
+-- Usage: check_hk_support <devinfo-path>
+--
+local util = require('util')
+local json = require('libhdkjsonlua')
+
+local progName = util.basename(arg[0])
+
+if (#arg ~= 1) then
+    io.stderr:write('Usage: '..progName..' <devinfo-path>\n')
+    os.exit(1)
+end
+
+local function _main()
+    local devinfoPath = arg[1]
+    if not util.isPathAFile(devinfoPath) then 
+        error('Invalid devinfo path "'..devinfoPath..'"')
+    end
+
+    -- Read the devinfo JSON data and parse it
+    local content = util.readFile(devinfoPath)
+    local parsedContent, err = json.parse(content)
+    assert(parsedContent, err)
+    assert(parsedContent.uuid and parsedContent.data, 'Incomplete devinfo data: '..devinfoPath)
+
+    -- Set the HKSupport flag in syscfg
+    local sc = require('libsysctxlua').new()
+    sc:writelock()
+    sc:set_homekit_supported(parsedContent.uuid:upper(), parsedContent.data.HKSupport)
+    sc:commit()
+end
+
+local ok, err = pcall(_main)
+if not ok then
+    io.stderr:write(('ERROR: %s\n'):format(err))
+    os.exit(1)
+end

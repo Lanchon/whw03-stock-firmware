@@ -1,0 +1,74 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish IP address of a slave
+
+PROGNAME="$(basename $0)"
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+errout () {
+    echo "$*" 1>&2
+}
+
+debout () {
+    [ "$DEBUG" ] && errout "$*"
+}
+
+die() {
+    errout "$PROGNAME: " "$*"
+    exit 1
+}
+
+usage() {
+    cat <<EOF
+$PROGNAME Ask Node if it is up?  Presume no response means no up.
+Usage:
+        $PROGNAME {options} {FILE}
+Where {options} are one or more of:
+  -u {UUID}   Target Node ID
+  -h          This help
+Note: If -u {UUID} is required.
+EOF
+}
+
+while getopts ":du:h" opt;do
+    case $opt in
+        d)  DEBUG=1 ;;
+        u)  TARGET_UUID=$OPTARG ;;
+        h) usage ; exit 0 ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+if [ -z "$TARGET_UUID" ]; then
+        usage
+        exit 1
+fi
+validate TARGET_UUID
+
+PUB_TOPIC="$(omsg-conf -s ARE-YOU-UP | sed "s/%uuid/$TARGET_UUID/" )"
+validate PUB_TOPIC
+
+if [ $DEBUG ];then
+    echo "$0 Options:"
+    echo "   BIND_ADDR: '$BIND_ADDR'"
+    echo "   HOST_PORT: '$HOST_PORT'"
+    echo "   HOST_ADDR: '$HOST_ADDR'"
+    echo "   TOPIC:     '$PUB_TOPIC'"
+fi
+
+mk_infra_payload -s "cmd:are_you_up" | publish $PUB_TOPIC

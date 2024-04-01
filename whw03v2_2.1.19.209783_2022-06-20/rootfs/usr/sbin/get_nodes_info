@@ -1,0 +1,165 @@
+#!/bin/sh
+
+#------------------------------------------------------------------
+# © 2017 Belkin International, Inc. and/or its affiliates. All rights reserved.
+#------------------------------------------------------------------
+
+MODE=$(syscfg get smart_mode::mode)
+UNCONFIGURED_MODE=0
+SLAVE_MODE=1
+MASTER_MODE=2
+
+SELF_NAME="`basename $0`"
+
+
+
+#----------------------------------------------------------------------
+
+PrintChannelInfo(){
+if [ "$MODE" != "$MASTER_MODE" ];then
+	echo "$SELF_NAME: error, not in master mode, $MODE, exit" > /dev/console
+	return
+fi
+
+WLAN_Dir="/tmp/msg/WLAN"
+if [ ! -d "$WLAN_Dir" ];then
+	echo "$SELF_NAME: error, miss directory: $WLAN_Dir, exit" > /dev/console
+	return
+fi
+
+SLAVELIST=""
+check_slave_online list >/dev/null
+if [ $? -eq 0 ];then
+  SLAVELIST=`check_slave_online list`
+fi
+
+FILELIST=`ls $WLAN_Dir 2>/dev/null`
+FIRSTFLAG=0
+echo "var channel = {\"data\":["
+for arg in $FILELIST ;do
+	FileName="${WLAN_Dir}/${arg}/status"
+	if [ ! -f "$FileName" ];then
+		continue
+	fi
+
+	UUID=`grep "uuid" $FileName | awk -F'"' '{print $4}'`
+	if [ "$UUID" = "master" ];then
+		UUID=`syscfg get device::uuid`
+	else
+		SELF_UUID=`syscfg get device::uuid`
+		echo "$UUID" | egrep "^$SELF_UUID$" > /dev/null
+		if [ $? -ne 0 ] ;then
+			#it is a slave
+			#check the connection status
+			echo $SLAVELIST | grep "$UUID" > /dev/null
+			if [ $? -ne 0 ] ;then
+				#not a online slave
+				continue
+			fi
+		fi
+	fi
+
+	if [ "$FIRSTFLAG" -ne "0" ];then
+		echo ","
+	fi
+
+	echo "{"
+	echo " \"deviceID\": \"$UUID\","
+	echo " \"channels\": ["
+
+	echo "   {"
+	Channel2G=`grep "userAp2G_channel" $FileName | awk -F'"' '{print $4}' `
+	echo "    \"radioID\": \"RADIO_2.4GHz\","
+	echo "    \"band\": \"2.4GHz\","
+	echo "    \"channel\": \"$Channel2G\""
+
+	Bssid5GL=`grep "userAp5GL_bssid" $FileName | awk -F'"' '{print $4}' `
+	if [ "$Bssid5GL" != "" ];then
+		echo "   },"
+	
+		echo "   {"
+		Channel5GL=`grep "userAp5GL_channel" $FileName | awk -F'"' '{print $4}' `
+		echo "    \"radioID\": \"RADIO_5GHz\","
+		echo "    \"band\": \"5GHz\","
+		echo "    \"channel\": \"$Channel5GL\""
+	fi
+
+	Bssid5GH=`grep "userAp5GH_bssid" $FileName | awk -F'"' '{print $4}' `
+	if [ "$Bssid5GH" != "" ];then
+		echo "   },"
+
+		echo "   {"
+		Channel5GH=`grep "userAp5GH_channel" $FileName | awk -F'"' '{print $4}' `
+		echo "    \"radioID\": \"RADIO_5GHz_2\","
+		echo "    \"band\": \"5GHz\","
+		echo "    \"channel\": \"$Channel5GH\""
+	fi
+	echo "   }"
+
+	echo " ]"
+	echo "}"
+
+	FIRSTFLAG=1
+done
+echo "]};"
+
+}
+
+#----------------------------------------------------------------------
+PrintAutochannelStatus(){
+ENABLED=`syscfg get autochannel::enabled`
+STATUS=`sysevent get autochannel-status`
+INFO=`sysevent get autochannel-errinfo`
+
+if [ "$ENABLED"x == "1"x ] ;then
+	ENABLED=1
+	if [ "$STATUS" != "running" ];then
+		STATUS="idle"
+	fi
+else
+	ENABLED=0
+	STATUS="idle"
+	INFO=""
+fi
+
+
+echo "var acstatus = {"
+echo " \"enabled\": \"$ENABLED\","
+echo " \"status\": \"$STATUS\","
+echo " \"info\": \"$INFO\""
+echo "};"
+}
+
+#----------------------------------------------------------------------
+
+PrintUsage(){
+echo "This is used to print the information of nodes with json format, from the MQTT messge (/tmp/msg)" > /dev/console
+echo "$SELF_NAME channel    --show the channel information of all nodes" > /dev/console
+echo "$SELF_NAME acstatus   --show the information about autochannel service" > /dev/console
+}
+
+
+GLOBAL_VAR="$@"
+if [ $# -lt 1 ]; then
+	PrintUsage
+	exit
+fi
+
+for arg in $GLOBAL_VAR
+do
+    case $arg in
+	"channel")
+		PrintChannelInfo
+		;;
+	"acstatus")
+		PrintAutochannelStatus
+		;;
+	*)
+		PrintUsage
+		exit
+		;;
+    esac
+done
+
+
+

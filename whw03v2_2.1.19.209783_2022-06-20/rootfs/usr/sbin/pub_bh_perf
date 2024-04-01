@@ -1,0 +1,199 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish some backhaul performance
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+source /etc/init.d/node-mode_common.sh
+
+# Round up $1
+roundup() {
+    printf "%.0f\n" $1
+}
+
+errout () {
+    local TS="$(date '+%F %T') ($(uptime -h|cut -f1 -d,|cut -f3- -d' '))"
+    local MSG="$(echo $*)"
+    echo "$PROG_NAME $TS $MSG" 1>&2
+    ulog node-mode $PROG_NAME "$MSG"
+}
+
+debout () {
+    [ "$DEBUG" ] && errout "$*"
+}
+
+die() {
+    errout "$PROG_NAME: " "$*"
+    exit 1
+}
+
+
+PROG_NAME="$(basename $0)"
+LOCK_FILE="/var/lock/$PROG_NAME"
+MODE=$(syscfg get smart_mode::mode)
+UNCONFIGURED_MODE=0
+MASTER_MODE=2
+SLAVE_MODE=1
+PERF_LOGGER=log_bh_perf_data
+
+usage() {
+    cat <<EOF
+$PROGNAME Publish backhaul performancs to Master.
+Usage:
+        $PROGNAME {options}
+Where {options} are one or more of:
+  -p {IP}     Parent IP
+  -r {RATE}   Backhaul speed in Mb/s
+  -D {DELAY}  Thrulay delay value
+  -j {JITTER} Thrulay jitter value
+  -h          This help
+EOF
+}
+
+
+while getopts ":dp:r:D:j:h" opt;do
+    case $opt in
+        d)  DEBUG=1           ;;
+        p)  PARENT_IP=$OPTARG ;;
+        r)  RATE=$OPTARG      ;;
+        D)  DELAY=$OPTARG     ;;
+        j)  JITTER=$OPTARG    ;;
+        h) usage ; exit 0     ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+SE_NAME="backhaul::l3_perf"
+
+# Set debug level from syscfg if set
+DEBUG="$(syscfg get ${PROG_NAME}::debug)"
+[ "$DEBUG" = "0" ] && unset DEBUG
+
+
+PUB_TOPIC="$(omsg-conf -m BH-perf | sed "s/+/$TOPIC_UUID/")"
+
+if [ $DEBUG ];then
+    debout "publish backhaul performance"
+    debout "Options:"
+    debout "        ARGS: $ARGS"
+    debout "       DEBUG: $DEBUG"
+    debout "       TOPIC: $PUB_TOPIC"
+    debout "   BIND_ADDR: $BIND_ADDR"
+    debout "   HOST_ADDR: $HOST_ADDR"
+    debout "   HOST_PORT: $HOST_PORT"
+    debout "   PARENT_IP: $PARENT_IP"
+    debout "        RATE: $RATE"
+    debout "       DELAY: $DELAY"
+    debout "      JITTER: $JITTER"
+fi
+
+validate PUB_TOPIC
+validate PARENT_IP
+validate RATE
+
+
+# Convert a number from float to integer by dropping its' fraction
+# $1: Number to convert to integer
+to_int () {
+    echo $1 | sed 's/\..*$//'
+}
+
+# Read a sequence of number from stdin, outputing the maximum value
+# (or zero if non)
+max_from_stdin () {
+    local ACC=0
+    while read X; do
+        X=$(to_int $X)
+        [ $X -gt $ACC ] && ACC=$X
+    done
+
+    echo $ACC
+}
+
+
+# $1: Parent IP
+# $2: RATE
+# $3: DELAY
+# $4: JITTER
+publish_bh_performance () {
+    local PARENT_IP="$1"
+    local RATE="$2"
+    local DELAY="$3"
+    local JITTER="$4"
+    local PERF_LOG=$($PERF_LOGGER -F)
+    local SEQ_LEN=$(syscfg get thrulay::min_bad_seq_len)
+    SEQ_LEN=${SEQ_LEN:-3}
+
+    local PAYLOAD="$(mk_infra_payload \
+          -t status \
+          -u "$UUID" \
+          -s "parent_ip:$PARENT_IP" \
+          -s "rate:$RATE" \
+          -s "delay:$DELAY" \
+          -s "jitter:$JITTER" \
+          $ARGS)"
+
+    echo "$PAYLOAD" | publish "$PUB_TOPIC"
+
+    $PERF_LOGGER -D $DELAY -R $RATE -J $JITTER
+    local ROUNDED_UP_RATE="$(roundup $RATE)"
+
+    # Extract sequence from log & update with the maximum value.
+    local MAX_MEASURED=$(tail -n $SEQ_LEN $PERF_LOG | cut -f3 -d, | max_from_stdin)
+
+    sysevent set "$SE_NAME" "$MAX_MEASURED"
+    debout "Setting sysevent $SE_NAME='$MAX_MEASURED'"
+}
+
+# Check for throttle condition.  If true, do not proceed.
+if [ "$(syscfg get $BH_PERF_THROTTLE_ENABLE_SYSCFG_VAR)" = "1" ]; then
+    PER_F_MIN_AGE=5
+    # Check if performance has been measured recently.  (In this context,
+    # "recently" is defined as less than PER_F_MIN_AGE minutes ago.)  We
+    # do this by checking for the existence of a performance queue file
+    # and checking its' age.
+    # Fortunately the friendly $PERF_LOGGER command will report
+    # where it logs data if asked politely.
+    PER_FPATH="$($PERF_LOGGER -F)"
+    if [ -f "$PER_FPATH" ]; then
+        # It exists; is it more than PER_F_MIN_AGE minutes old?
+        if [ "$(find $(dirname $PER_FPATH)        \
+                     -name $(basename $PER_FPATH) \
+                     -maxdepth 1                  \
+                     -mmin -${PER_F_MIN_AGE})" ]; then
+            MSG="$PROG_NAME: Skipping measurement; one was done < $PER_F_MIN_AGE minutes ago"
+            echo $MSG > /dev/console
+            ulog node-mode pub_bh_perf "$MSG"
+            exit 0
+        fi
+    fi
+else
+    debout "Ignoring throttle check; throttling disabled"
+fi
+
+########################################################################
+#                        Mutual exlusion zone
+# We don't want to run multiple simultanious copies of Thrulay so use
+# a file lock.  We also don't need to run multiple consecutive
+# Thrulays; if it just ran then there is no need to run it again.  So
+# have the lock fail (rather than block) and exit.
+(
+    flock -n 9 || die "Performance measurement already in progress; aborting"
+    #debout "Running with the lock"
+    publish_bh_performance $PARENT_IP $RATE $DELAY $JITTER
+    #debout "Releasing lock"
+) 9>$LOCK_FILE
+#
+########################################################################

@@ -1,0 +1,294 @@
+#!/bin/sh
+
+#------------------------------------------------------------------
+# © 2016 Belkin International, Inc. and/or its affiliates. All rights reserved.
+#------------------------------------------------------------------
+
+source /etc/init.d/ulog_functions.sh
+
+Debug()
+{
+#	echo "[fw.sh] $@" >> /dev/null
+	echo "[fw.sh] $@" >> /dev/console
+} 
+
+verify_linksys_header () 
+{
+	ErrorCode=2
+
+	Debug "verify_linksys_header"
+	
+	LINKSYS_HDR="/tmp/linksys.hdr"
+	FILE_LENGTH=`stat -c%s "$1"`
+	IMAGE_LENTGH=`expr "$FILE_LENGTH" - 256`
+	dd if="$1" of="$LINKSYS_HDR" skip="$IMAGE_LENTGH" bs=1 count=256 > /dev/console
+
+	magic_string="`cat $LINKSYS_HDR | cut -b 1-9`"
+	if [ "$magic_string" != ".LINKSYS." ]
+	then
+		ulog autofwup status  "Fail : verify magic string "
+		exit $ErrorCode
+	fi
+
+	hdr_version="`cat $LINKSYS_HDR | cut -b 10-11`"
+	hdr_length="`cat $LINKSYS_HDR | cut -b 12-16`"
+	sku_length="`cat $LINKSYS_HDR | cut -b 17`"
+
+	sku_end=`expr 18 + "$sku_length" - 2`
+	sku_string="`cat $LINKSYS_HDR | cut -b 18-$sku_end`"
+
+	img_cksum="`cat $LINKSYS_HDR | cut -b 33-40`"
+	sign_type="`cat $LINKSYS_HDR | cut -b 41`"
+	signer="`cat $LINKSYS_HDR | cut -b 42-48`"
+
+	kernel_ofs="`cat $LINKSYS_HDR | cut -b 50-56`"
+	rfs_ofs="`cat $LINKSYS_HDR | cut -b 58-64`"
+
+	crc1=`dd if="$1" bs="$IMAGE_LENTGH" count=1| cksum | cut -d' ' -f1`
+	hex_cksum=`printf "%08X" "$crc1"`
+	if [ "$img_cksum" != "$hex_cksum" ]
+	then
+		ulog autofwup status "Fail : verify image checksum "
+		Debug "Checksum Error"
+		exit $ErrorCode
+	fi
+
+# Skip SKU veryfing until we decide how to handle the SKU changing 
+#	MODEL_BASE=`syscfg get device::model_base`
+#	if [ "$sku_string" != "$MODEL_BASE" ]
+#	then
+#		ulog autofwup status  "Fail : verify SKU_base device($MODEL_BASE), image($sku_string)"
+#		exit 1
+#	fi
+
+	Debug "verify_linksys_header: success"
+}
+ 
+verify_header () 
+{
+	header_file="/tmp/img_hdr"
+	magic="`cat $header_file | cut -b 1-6`"
+	version="`cat $header_file | cut -b 7-8`"
+	img_cksum="`cat $header_file | cut -b 25-32`"
+	rm -rf $header_file
+
+	if [ "$magic" != ".CSIH." ]
+	then
+		ulog autofwup status "Fail : verify magic "
+		exit 1
+	fi
+	
+	if [ "$version" != "01" ]
+	then
+		ulog autofwup status "Fail : verify version "
+		exit 1
+	fi
+
+	crc1=`cksum $1 | cut -d' ' -f1`
+	hex_cksum=`printf "%08X" "$crc1"`
+	if [ "$img_cksum" != "$hex_cksum" ]
+	then
+		ulog autofwup status "Fail : verify checksum "
+		exit 1
+	fi
+}
+
+update_key_data()
+{
+	Server=$(syscfg get fwup_server_uri)
+	Model=$(syscfg get device::modelNumber)
+	Hardware=$(syscfg get device::hw_revision)
+	Mac=$(syscfg get device::mac_addr | tr -s ':' '-')
+	Version=$(syscfg get fwup_firmware_version)
+	Serial=$(syscfg get device::serial_number)
+	Request=$(printf "%s/api/v2/key?manufacturer=linksys&mac_address=%s&model_number=%s&hardware_version=%s&installed_version=%s&serial_number=%s" $Server $Model $Hardware $Mac $Version $Serial)
+
+	KeyData1=/var/config/keydata
+	KeyData2=/etc/keydata
+
+	echo "$Request"
+
+	if [ -e "$1" ]; then
+		rm "$1"
+	fi
+
+	Response="$1.dat"
+
+	curl --capath "/etc/certs/root" -o "$Response" "$Request" 
+	if [ $? -eq 0 ] && [ -s "$Response" ]; then
+		fwkey "$Response" "$1"
+	else
+		Debug "updating key: failed"
+	fi
+
+	if [ -s "$1" ]; then
+		diff -q "$1" "$KeyData1"
+		if [ $? -ne 0 ]; then
+			cp "$1" "$KeyData1"
+		fi
+	else
+		if [ -s "$KeyData1" ]; then
+			cp "$KeyData1" "$1"
+		else
+			if [ -s "$KeyData2" ]; then
+				cp "$KeyData2" "$1"
+			fi
+		fi
+	fi
+}
+
+check_gpg_signature()
+{
+	Error=2
+
+	Debug "check_gpg_signature"
+
+	export GNUPGHOME=/tmp/gpg
+
+	if [ ! -d $GNUPGHOME ]; then
+		mkdir $GNUPGHOME
+		chmod 700 $GNUPGHOME
+	fi
+	cd $GNUPGHOME
+
+	KeyData="$GNUPGHOME/keydata"
+	update_key_data $KeyData
+
+	gpg --import --ignore-time-conflict "$KeyData"
+	if [ $? -ne 0 ]; then
+		return $Error
+	fi
+
+	gpg --verify --ignore-time-conflict "$1" 
+	if [ $? -ne 0 ]; then
+		return $Error
+	fi
+	
+	Debug "check_gpg_signature: success"
+}
+
+decrypt_gpg_image()
+{
+	Error=2
+
+	Debug "decrypt_gpg_image"
+
+	ImageFile="$GNUPGHOME/firmware"
+	gpg --ignore-time-conflict -d "$1" > $ImageFile
+	
+	if [ $? -ne 0 ]; then
+		return $Error
+	fi
+
+	FirmwareImage="$ImageFile"
+
+	Debug "decrypt_gpg_image: success"
+}
+
+extract_gpg_image()
+{
+	Error=2
+
+	check_gpg_signature "$1"
+	
+	if [ $? -ne 0 ]; then
+		return $Error		
+	fi
+
+	decrypt_gpg_image "$1"
+
+	if [ $? -ne 0 ]; then
+		return $Error		
+	fi
+}
+
+check_signature_gpg()
+{
+	ErrorCode=2
+
+	Debug "check_signature [$1]"
+
+	if [ ! -e "$1" ]; then
+		exit $ErrorCode
+	fi
+
+	check_gpg_signature "$1"
+
+	if [ $? -ne 0 ]; then
+		verify_linksys_header "$1"
+	fi
+}
+
+verify_signature_gpg()
+{
+	ErrorCode=2
+
+	Debug "verify_signature [$1]"
+
+	if [ ! -e "$1" ]; then
+		exit $ErrorCode
+	fi
+
+	RegionCode=`skuapi -g cert_region | awk -F"=" '{print $2}' | sed 's/ //g'`
+	ProdType=$(cat /etc/product.type)
+	Signed=$(cat /etc/fwcaps.sig)
+	GpgMode=$(syscfg get fwup_gpg_mode)
+
+	extract_gpg_image "$1"
+
+	if [ $? -ne 0 ]; then
+		FirmwareImage=""
+	fi
+
+	if [ "$FirmwareImage" == "" ]; then
+		if [ "$RegionCode" == "US" ] && [ "$ProdType" == "production" ] && [ "$Signed" == "signed" ]; then
+			exit $ErrorCode
+		elif [ "$GpgMode" == "1" ]; then
+			exit $ErrorCode
+		else
+			verify_linksys_header "$1"
+			FirmwareImage="$1"
+		fi
+	fi
+}
+
+check_signature()
+{
+	if [ -f /etc/fwcaps.sig ]; then
+		check_signature_gpg "$1"
+	else
+		verify_linksys_header "$1"
+	fi
+}
+
+verify_signature()
+{
+	if [ -f /etc/fwcaps.sig ]; then
+		verify_signature_gpg  "$1"
+	else
+		verify_linksys_header "$1"
+	fi
+}
+
+#------------------------------------------------------------------
+# ENTRY
+#------------------------------------------------------------------
+
+case "$1" in
+   verify)
+	  verify_header "$2" 
+	  ;;
+   verify_linksys)
+	  verify_linksys_header "$2" 
+	  ;;  
+   check_signature)
+	  check_signature "$2"
+	  ;;
+   verify_signature)
+	  verify_signature "$2"
+	  ;;
+   *)
+	  exit 3
+	  ;;
+esac
+

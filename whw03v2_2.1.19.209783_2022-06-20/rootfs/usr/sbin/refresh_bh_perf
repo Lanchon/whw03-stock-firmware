@@ -1,0 +1,278 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish some backhaul performance
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/node-mode_common.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+# Currently (2018-09-05) Nodes no longer waits 10 seconds before
+# starting a backhaul performance measurement.
+NODE_BH_KICKOFF_DELAY=0
+
+# In addition, JR devices are slow.
+JR_DELAY=4
+
+# Combine the above for an additional "inter-node" delay.  We really
+# don't want multiple backhaul performance measurements running in
+# parallel.
+INTER_NODE_DELAY=$((NODE_BH_KICKOFF_DELAY+JR_DELAY))
+
+# Are we running as a cron job?
+CRON_MODE=
+
+timestamp () {
+    echo "$(date '+%F %T') $(uptime -h|cut -f1 -d,|cut -f3- -d' ')"
+}
+
+# $1: msg
+# $2: optional status
+logout () {
+    local STATUS="${2:-status}"
+    local MSG="$1"
+    local OUT
+    if [ $CRON_MODE ]; then
+        OUT=/dev/console
+    else
+        OUT=/dev/tty
+    fi
+    echo "$PROG_NAME $(timestamp) $MSG" > $OUT
+    ulog $PROG_NAME "$STATUS" "$MSG"
+}
+
+errout () {
+    logout "$*" ERROR
+}
+
+debout () {
+    [ "$DEBUG" ] && logout "$*"
+}
+
+verbout () {
+    [ $VERBOSE ] && logout "$*"
+}
+
+die() {
+    errout "$PROG_NAME: " "$*"
+    exit 1
+}
+
+handle_error() {
+    local UUID="$1"
+    local ERROR_EVENT="backhaul::refresh_error_$UUID"
+    ERROR_CODE=$2
+
+    sysevent set $ERROR_EVENT $ERROR_CODE
+    errout "$3"
+}
+
+PROG_NAME="$(basename $0)"
+CRONJOB_EXT=".cron"
+LOCK_FILE="/var/lock/$PROG_NAME"
+MODE=$(syscfg get smart_mode::mode)
+UNCONFIGURED_MODE=0
+MASTER_MODE=2
+SLAVE_MODE=1
+PERF_LOGGER=log_bh_perf_data
+SLEEP_TIME=4
+DO_ALL=1
+PORT=5003
+
+# Check it specified pattern matches the current time.
+# $1: Pattern to match
+# Returns 0 (unix command success) for a match, non-zero if not
+time_match() {
+    local PAT="$1"
+    local STATUS=1
+    local CURRENT_TIME="$(date +%T)"
+    if [ "${CURRENT_TIME%$PAT}" != "${CURRENT_TIME}" ]; then
+        STATUS=0
+    fi
+    return $STATUS
+}
+
+
+# Set debug level from syscfg if set
+DEBUG="$(syscfg get ${PROG_NAME}::debug)"
+[ "$DEBUG" = "0" ] && unset DEBUG
+
+usage() {
+    cat <<EOF
+$PROG_NAME Request backhaul speed measurements.
+Usage:
+        $PROG_NAME {options}
+Where {options} are one or more of:
+  -i {UUID}   UUID of device to query
+  -a          Query ALL Nodes (default)
+  -p {PORT}   Port to specify in speed request (default:$PORT)
+  -v          Be verbose
+  -w          Time to wait between queries (default:$SLEEP_TIME)
+  -h          This help
+Note: -i disables -a.
+EOF
+}
+
+
+while getopts ":di:ap:vw:h" opt;do
+    case $opt in
+        d)  DEBUG=1                   ;;
+        i)  UUID=$OPTARG ; unset DO_ALL ; debout "UUID: '$UUID'" ;;
+        a)  DO_ALL=1                  ;;
+        p)  PORT=$OPTARG              ;;
+        v)  VERBOSE=1                 ;;
+        w)  SLEEP_TIME=$OPTARG        ;;
+        h)  usage ; exit 0            ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+# If command name ends with ".cron" then this is running as a cron
+# job.  Special handling for this includes only running when the current
+# minute matches specific criteria.
+if [ "$(basename $PROG_NAME $CRONJOB_EXT)" != "$PROG_NAME" ]; then
+    CRON_MODE=1
+    # For cronjobs, we only run every 10 minutes when the minutes
+    # units matches a hash of the base MAC.  E.g. if the hash is 7,
+    # then we run on 7,17,27,etc.  This is to prevent many Node
+    # networks from all simultaneously scheduling backhaul performance
+    # measurements.  This turns out to cause such a spike in RF that
+    # the various Nodes interfere with each others' measurements.
+    debout "Running as cron job"
+    MAC="$(syscfg get device::mac_addr)"
+    # Convert hex MAC to decimal, excluding ":" characters:
+    MAC_AS_DEC_NUM="$((0x${MAC//:}))"
+    # Simple hash function: modulus 9 + 1.  (We add 1 to avoid running
+    # on minute 0, since everyminute jobs do that.)
+    MINUTE="$(((MAC_AS_DEC_NUM % 9) + 1))"
+    TIME_PAT="${MINUTE}:??"
+
+    debout "MAC:            '$MAC'"
+    debout "MAC_AS_DEC_NUM: '$MAC_AS_DEC_NUM'"
+    debout "MINUTE:         '$MINUTE'"
+    debout "TIME_PAT:       '$TIME_PAT'"
+    if time_match $TIME_PAT; then
+        debout "Now is the time"
+    else
+        debout "Time criteria not met - exiting"
+        exit 0
+    fi
+else
+    debout "Not cron job - proceeding as interactive command"
+fi
+
+# Abort if setup is in progress
+SC_SETUP_STATE="$(sysevent get smart_connect::setup_status)"
+debout "Smart_connect setup state: '$SC_SETUP_STATE'"
+
+if [ -n "$SC_SETUP_STATE" -a "$SC_SETUP_STATE" != "READY" ]; then
+    errout "Aborting: active setup detected"
+    exit 1
+fi
+
+MASTER_IP="$(sysevent get master::ip)"
+if [ ! $MASTER_IP ]; then
+    errout "Can not detmine Master IP"
+    exit 1
+fi
+
+TOPIC_TEMPLATE="$(omsg-conf -s SPEED_TEST)"
+
+# Send speed test request to a single Node
+# $1: UUID
+query_node () {
+    local UUID="$1"
+    local rc=1
+    if [ $UUID ]; then
+        local NPATH="${BH_CACHE_DIR}/${UUID}"
+        if [ -d "$NPATH" ]; then
+            local SFILE="${NPATH}/status"
+            if [ -f "$SFILE" ]; then
+                local SDATA="$(cat ${NPATH}/status)"
+                if [ -n "$SDATA" ]; then
+                    local CON_TYPE="$(echo $SDATA | jsonparse data.type)"
+                    local PIP
+                    case "$CON_TYPE" in
+                        "WIRELESS")
+                            local PFILE="${NPATH}/status.parent_ip"
+                            if [ -f "$PFILE" ]; then
+                                PIP="$(cat $PFILE)"
+                            fi
+                            ;;
+                        "WIRED")
+                            PIP="$MASTER_IP"
+                            ;;
+                        *)
+                            handle_error $UUID "ErrorUnknownConnectionType" "Unknown connection type '$CON_TYPE'" 
+                            ;;
+                    esac
+                    if [ $PIP ]; then
+                        local PUB_TOPIC="$(echo "$TOPIC_TEMPLATE" | sed "s/%uuid/$UUID/")"
+                        local PAYLOAD="$PIP:$PORT"
+                        verbout "Sending request '$PAYLOAD' to topic '$PUB_TOPIC'"
+                        echo "$PAYLOAD" | publish "$PUB_TOPIC"
+                        rc=0
+                    else
+                        handle_error $UUID "ErrorParentIPNotFound" "Could not determine parent IP for $UUID"
+                    fi
+                else
+                    handle_error $UUID "ErrorEmptyDataFile" "Empty data file for $UUID"
+                fi
+            else
+                handle_error $UUID "ErrorStatusFileNotFound" "Couldn't find status file for $UUID"
+            fi
+        else
+            handle_error $UUID "ErrorDeviceDataNotFound" "Can't find data for device $UUID; directory '$NPATH' not found"
+        fi
+    fi
+
+    return $rc
+}
+
+# Send speed test requests to all Nodes.
+query_all_nodes () {
+    if [ -d "${BH_CACHE_DIR}" ]; then
+        cd ${BH_CACHE_DIR}
+        for i in *; do
+            local NODE_SLEEP_TIME=$SLEEP_TIME
+            if [ -d "$i" ]; then
+                local STATFILE="$i/status"
+                if [ -f "$STATFILE" ]; then
+                    local UUID="$(jsonparse uuid < $STATFILE)"
+                    query_node $UUID
+                    local DI_FILE=$MSG_CACHE_DIR/DEVINFO/$UUID
+                    NODE_SLEEP_TIME="$(jsonparse data.bh_perf_test_time < $DI_FILE)"
+                    NODE_SLEEP_TIME=${NODE_SLEEP_TIME:-$SLEEP_TIME}
+                fi
+            fi
+            sleep $((NODE_SLEEP_TIME+INTER_NODE_DELAY))
+        done
+    else
+        debout "No BH data present"
+    fi
+}
+
+
+if [ $DO_ALL ]; then
+    debout "Refreshing All backhaul speed measurements"
+    query_all_nodes
+else
+    debout "Refreshing backhaul speed measurements for $UUID"
+    query_node $UUID
+    rc=$?
+    echo $ERROR_CODE
+fi
+
+verbout "Done."
+exit $rc

@@ -1,0 +1,39 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish CONFIG-ME MQTT message
+#
+# To see the incoming data on the broker, use this command:
+#   $ mosquitto_sub -t network/master/OMSG/cmd/CONFIG-ME -d
+#
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PUB_TOPIC="$(omsg-conf -f /etc/subscriber.d/master.subs configure_me | sed "s/+/$TOPIC_UUID/" )"
+validate PUB_TOPIC
+
+if [ $DEBUG ];then
+    echo "$0 Options:"
+    echo "   BIND_ADDR: '$BIND_ADDR'"
+    echo "   HOST_PORT: '$HOST_PORT'"
+    echo "   HOST_ADDR: '$HOST_ADDR'"
+    echo "   TOPIC:     '$PUB_TOPIC'"
+fi
+
+IP="$(sysevent get ipv4_wan_ipaddr)"
+validate IP
+
+mk_infra_payload \
+    -t status \
+    -u "$(syscfg get device::uuid)" \
+    -s "fw_ver:$(syscfg get fwup_firmware_version)" \
+    -s "pin:$(syscfg get smart_connect::client_pin)" \
+    -s "SKU:$(syscfg get device::modelNumber)" \
+    -s "ip:$IP" \
+    -s "bt_mac:$(syscfg get bt_mac_addr)" \
+    -s "connection:wired" \
+    -s "status:unconfigured" | \
+       publish "$PUB_TOPIC"

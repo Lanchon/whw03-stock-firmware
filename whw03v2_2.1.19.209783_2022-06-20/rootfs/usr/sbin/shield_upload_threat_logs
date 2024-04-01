@@ -1,0 +1,243 @@
+#!/bin/sh
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/event_handler_functions.sh
+
+SERVICE_NAME=shield
+PROG_NAME="`basename $0`"
+CERTS_ROOT=/etc/certs/root
+LINKSYS_TOKEN=$(syscfg get device::linksys_token)
+NETWORK_ID="$(syscfg get owned_network_id)"
+
+CLOUD_REQ_TIMEOUT=10
+CLOUD_LSWF_DOMAIN="https://$(syscfg get cloud::host)"
+CLOUD_CLIENT_TYPE_ID=AA296AC6-61D1-4D3F-83FA-96D7486A09CF
+
+TM_COUNTER_FILE=/proc/bw_hit_cnt
+TM_ROOT_DIR=/tmp/shn/bin
+COUNTER_SUMMARY_FILE=shield_counter_summary.json
+LOG_TYPES="threats websiteattacks"
+
+CMD_threats="${TM_ROOT_DIR}/shn_ctrl -a get_vp"
+CMD_websiteattacks="${TM_ROOT_DIR}/shn_ctrl -a get_wrs_url"
+CMD_anomalies="${TM_ROOT_DIR}/shn_ctrl -a get_anomaly"
+
+log_it()
+{
+    TZ=UTC logger -s -t $PROG_NAME "$1"
+}
+
+upload_log_files()
+{
+   local cmd=$(cat << EOF
+       curl -s -w "%{http_code}" --capath ${CERTS_ROOT} --max-time $CLOUD_REQ_TIMEOUT -o /dev/null
+       -H "X-Linksys-Token:$LINKSYS_TOKEN"
+       -H "Accept:application/json"
+       -H "Content-Type:multipart/form-data"
+       -H "X-Linksys-Client-Type-Id:${CLOUD_CLIENT_TYPE_ID}"
+       -X POST "${CLOUD_LSWF_DOMAIN}/shield-service/rest/networks/${NETWORK_ID}/securitycountersummary"
+       -F "counters=<${COUNTER_SUMMARY_FILE};type=application/json"
+EOF
+)
+    for type in $LOG_TYPES
+    do
+        # If records were found for the given log type,
+        # then add the file to the upload request.
+        if [ $(eval echo '$'COUNT_$type) -gt 0 ] && [ -f $type.log ]; then
+            cmd="$cmd -F \"${type}log=@${type}.log;type=text/plain\""
+        fi
+    done
+
+    log_it "Sending cloud upload request"
+    local http_code=$(eval $cmd)
+    case $http_code in
+        200|202)
+            msg="Upload successful"
+            rc=0
+            ;;
+        400)
+            msg="ERROR: Invalid request"
+            rc=3
+            ;;
+        401)
+            msg="ERROR: Invalid Linksys token"
+            rc=3
+            ;;
+        403)
+            rc=3
+            msg="ERROR: Invalid client type"
+            ;;
+        *) 
+            msg="ERROR: Cloud request failed"
+            rc=3
+            ;;
+    esac 
+    log_it "HTTP $http_code - $msg."
+
+    return $rc
+}
+
+filter_threat_log()
+{
+    local type=$1
+    local entry_cnt=0
+    local starttime=$(sysevent get shield::logging_starttime)
+    local record=
+    local sep=
+
+    while IFS="" read line; do 
+        # check for the entry line
+        if echo $line | grep -E "^[-]{3}entry_cnt" > /dev/null; then
+            echo -n "$line" > $type.log.tmp 
+        # check for a separator line
+        elif echo "$line" | grep -E "^[-]+$" > /dev/null; then
+            # we found a separator line, so output the current record (if any)
+            if [ "$record" ]; then
+                echo -n "$sep"$'\n'"$record" >> $type.log.tmp 
+                unset sep && unset record
+            fi
+            sep=$sep$'\n'$line
+        # check for the begining of a record
+        elif echo $line | grep -E "^\[[0-9]+\]" > /dev/null; then
+            record=$(echo "$line" | sed -E "s/\[[0-9]+\]/\[$entry_cnt\]/")
+        else # check for the timestamp field
+            if echo "$line" | grep -E "^[[:space:]]+time:" > /dev/null; then
+                local timestamp=$(echo "$line" | tr -s ' ' | cut -d' ' -f2)
+                # If the record was created before the current logging start time
+                # then discard it
+                if [ $timestamp -lt $starttime ]; then
+                    unset record && unset sep
+                else
+                    entry_cnt=$(( $entry_cnt + 1 ))
+                fi
+            fi
+            [ "$record" ] && record="$record"$'\n'"$line"
+        fi
+    done < $type.log
+    echo "$sep" >> $type.log.tmp 
+    sed -E -i "s/entry_cnt = [0-9]+/entry_cnt = $entry_cnt/" $type.log.tmp 
+    mv $type.log.tmp $type.log
+    log_it "Found $entry_cnt new $type log records"
+}
+
+filter_simple_log()
+{
+    local type=$1
+    local entry_cnt=0
+    local starttime=$(sysevent get shield::logging_starttime)
+    local pos=5 # number of columns before "action" in log
+    if [ "$type" == "anomalies" ]; then
+        pos=4
+    fi
+    while read line; do 
+        local timestamp=$(echo $line | grep -E -o ^[0-9]+)
+        if [ $timestamp ]; then
+            if [ $timestamp -ge $starttime ]; then
+                # Filter out any Accept records that were logged before the log flags could be set
+                if ! $(echo $line | grep -E -q "^([^[:space:]]+[[:space:]]+){$pos}Accept[[:space:]]+"); then
+                    echo "$line" >> $type.log.tmp
+                    entry_cnt=$(( $entry_cnt + 1 ))
+                fi
+            fi
+        else # header line
+            echo "$line" >> $type.log.tmp
+        fi
+    done < $type.log
+    sed -E -i "s/^---entry_cnt.+/---entry_cnt = $entry_cnt ---/" $type.log.tmp
+    mv $type.log.tmp $type.log
+    log_it "Found $entry_cnt new $type log records"
+}
+
+generate_threat_logs()
+{
+    local counter_names="vp wrs_sec"
+    local name_vp="threats"
+    local name_wrs_sec="websiteattacks"
+    COUNT_anomalies=0
+
+    # Generate the threat counter JSON summary data
+    local data="{"
+    for cn in $counter_names; do
+        value=$(grep $cn $TM_COUNTER_FILE | sed s/.*$cn// | cut -d':' -f2 | tr -d '[:space:]')
+        # Truncate any trailing counter name, in case two counters are listed on the line
+        value=${value%%[a-z]*}
+        [ ! $value ] && value=0 # Set the count to 0 if it wasn't found (should never happen)
+        if echo "$cn" | grep "^adp" >/dev/null; then
+            COUNT_anomalies=$(( $COUNT_anomalies + $value ))
+        else
+            local name=$(eval echo '$'name_$cn)
+            data="$data\"$name\":\"$value\","
+            eval "COUNT_$name='$value'"
+        fi
+    done
+#   data="$data\"anomalies\":\"$COUNT_anomalies\","
+    data="$data\"starttime\":\"$(sysevent get shield::logging_starttime)\","
+    data="$data\"endtime\":\"$(date +%s)\""
+    data="$data}"
+
+    echo $data > $COUNTER_SUMMARY_FILE
+
+    # Generate the logs
+    for type in $LOG_TYPES
+    do
+        # If threats were detected for the given type, then generate the log file
+        log_it "Count $type = $(eval echo '$'COUNT_$type)"
+        if [ $(eval echo '$'COUNT_$type) -gt 0 ]; then
+            log_it "Generating $type log"
+            local cmd=$(eval echo '$'CMD_$type)
+            eval $cmd > $type.log
+            local rc=$?
+            # Check the result of the log generation command
+            if [ $rc -eq 0 ]; then 
+                if [ "$type" == "threats" ]; then
+                    filter_threat_log $type
+                else
+                    filter_simple_log $type 
+                fi
+            else
+                log_it "ERROR: command failed ($rc): $cmd"
+            fi
+        fi
+    done
+}
+
+#################################################################
+#                           Main
+#################################################################
+
+# This process can only run if the Shield service is running
+if [ "$(sysevent get ${SERVICE_NAME}-status)" != "started" ]; then
+    log_it "ERROR: Service $SERVICE_NAME is not running."
+    exit 3
+fi
+
+cd $TM_ROOT_DIR
+RC=0
+
+# Generate the TM threat logs and get the counters
+log_it "Getting threat counters and logs"
+generate_threat_logs
+
+# If threats were detected since the last check,
+# then upload the logs
+if [ $COUNT_threats -gt 0 -o $COUNT_websiteattacks -gt 0 -o $COUNT_anomalies -gt 0 ]; then
+    upload_log_files
+    RC=$?
+    # If the upload was successful then clear the counters and logs,
+    # and reset the logging start time.
+    if [ $RC -eq 0 ]; then
+        echo 0 > $TM_COUNTER_FILE
+        # TODO: clear the logs
+        sysevent set shield::logging_starttime $(date +%s)
+    fi
+else
+    log_it "No threats detected since last check."
+fi
+
+# Clean up temporary files
+rm -f $COUNTER_SUMMARY_FILE
+for type in $LOG_TYPES; do
+    rm -f ${type}.log
+done
+
+exit $RC

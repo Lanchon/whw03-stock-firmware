@@ -1,0 +1,73 @@
+#########################################################################
+#!/bin/sh
+
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/service_wifi/wifi_steer_util.sh
+
+BIN=$(basename $0)
+
+usage()
+{
+    echo -e "usage:\n\t$BIN -c <client_mac> -a <action> -d <duration> -u <unit_uuids>" > /dev/console
+    echo -e "\nstart or cancel temp blacklist for a client" > /dev/console
+    echo -e "\n\t-c:\tclient mac address" > /dev/console
+    echo -e "\t-a:\tstart or cancel" > /dev/console
+    echo -e "\t-d:\tduration the blacklist keeps (seconds)" > /dev/console
+    echo -e "\t-u:\tcomma separated list of excluded unit uuid" > /dev/console
+    echo -e "example:\n\t$BIN -c 11:22:33:44:55:66 -a start -d 60 -u \"36D0B1BF-66D3-EE5C-C259-24F5A224AFB9,EC6D97DB-ACE4-CE93-6845-94103EE98346\"" > /dev/console
+    exit 1
+}
+
+die ()
+{
+    echo "$*" > /dev/console
+    exit 1
+}
+
+#---------------------------------------------------------------------------------------
+#   Entry of the script
+#---------------------------------------------------------------------------------------
+
+if [ "`syscfg get wifi_steer_debug`" = "1" ]; then
+    set -x
+fi
+
+while getopts c:u:a:d: OPTION; do
+    case "$OPTION" in
+        c)
+            target_client="$OPTARG"
+            ;;
+        a)
+            action="$OPTARG"
+            ;;
+        d)
+            duration="$OPTARG"
+            ;;
+        u)
+            excluded_units="$OPTARG"
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+# check input variables, mac format, uuid format, band name (TO DO)
+
+if [ -z "$target_client" -o -z "$action" -o -z "$duration" ]; then
+    usage
+fi
+
+lock_file=/var/lock/wifi_steer.lock
+
+( 
+flock -n 9 || die "Only one instance is allowed to be running at a time"
+
+dbg_log "$action temp blacklist for client $target_client"
+dbg_log "except unit $excluded_units"
+
+pub_nodes_temporary_blacklist $target_client $duration $action "$excluded_units"
+
+) 9>$lock_file
+

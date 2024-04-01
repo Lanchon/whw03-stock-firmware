@@ -1,0 +1,181 @@
+#!/bin/sh
+#
+# get_all_sysinfo - Gather sysinfo from 1 or more slave nodes
+#
+# Version 0.1.0
+#
+# by dash
+
+# Default values
+USERNAME="admin"
+SILENT="--silent"
+IPADDR="localhost"
+FAKEOUT=""
+# See if there's an admin password in syscfg & use it if present
+PASSWORD="$(syscfg get device::admin_password)"
+PASSWORD="${PASSWORD:-admin}"
+
+OP=""
+OP_QUERY_ONE="query_single"
+OP_QUERY_ALL="query_all"
+
+PROG_NAME=$(basename $0)
+DEFAULT_SYSINFO_DIR="/tmp"
+
+errout () {
+    echo "$*" 1>&2
+}
+
+debout () {
+    [ "$DEBUG" ] && errout "$*"
+}
+
+die() {
+    errout "$PROG_NAME: " "$*"
+    exit 1
+}
+usage() {
+    printf "%s gets sysinfo from one or all Nodes.\n" "$PROG_NAME"
+    printf "Output is stored to file 'sysinfo-{UUID}'.\n"
+    printf "Usage:\n"
+    printf "        %s {options}\n" $PROG_NAME
+    printf "Where {options} are one or more of:\n"
+    printf "  -a          Query all Nodes\n"
+    printf "  -h          This help\n"
+    printf "  -i {UUID}   Query just one Node by id (UUID) (required w/o -a)\n"
+    printf "  -p {PATH}   Where to save sysinfo file(s) (default: %s)\n" \
+           $DEFAULT_SYSINFO_DIR
+    printf "  -u {user}   User (default '%s')\n" "$USERNAME"
+    printf "  -w {pass}   Password (default '%s')\n" "$PASSWORD"
+    printf "Note: One of -a or -i are required.\n"
+}
+
+SYSINFO_DIR="$DEFAULT_SYSINFO_DIR"
+
+while getopts ":adi:p:u:w:h" opt;do
+    case $opt in
+        a)                       OP=$OP_QUERY_ALL   ;;
+        d) DEBUG=1                                  ;;
+        i) UUID=$OPTARG        ; OP=$OP_QUERY_ONE   ;;
+        p) SYSINFO_DIR=$OPTARG                      ;;
+        u) USERNAME=$OPTARG                         ;;
+        w) PASSWORD=$OPTARG                         ;;
+        h) usage ; exit 0                           ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+# Check for valid command & option combos
+if [ -z "$IPADDR" -a "$OP" != "$OP_QUERY_ALL" ]; then
+    echo "Error: -i required when not using -a"
+    usage
+    exit 1
+fi
+
+if [ -n "$DEBUG" ]; then
+    unset SILENT
+fi
+
+# $1: HOST
+# $2: Destination
+curler() {
+    local HOST="$1"
+    local DESTINATION="$2"
+    debout "Fetching sysinfo from $IP --> $DESTINATION"
+    curl $SILENT                 \
+         --insecure              \
+         -u $USERNAME:$PASSWORD  \
+         --connect-timeout 10    \
+         --location "http://${HOST}/sysinfo.cgi" > $DESTINATION
+}
+
+# $1: IP address to use
+# $2: UUID of Node
+# $3: Destination dir
+query_one() {
+    local IP="$1"
+    local UUID="$2"
+    local DESTINATION="${3}/sysinfo-${UUID}"
+    curler "$IP" "$DESTINATION"
+}
+
+# $1: UUID
+# $2: Destination dir
+query_one_by_uuid () {
+    local UUID="$(echo $1 | tr '[a-z]' '[A-Z]')"
+    local DEST_DIR="$2"
+    local BASE_DIR="$(syscfg get subscriber::file_prefix)"
+    # Find devinfo file
+    DFILE="${BASE_DIR}/DEVINFO/${UUID}"
+    if [ -f "$DFILE" ]; then
+        IPADDR="$(jsonparse data.ip < $DFILE)"
+        query_one $IPADDR $UUID "$DEST_DIR"
+    else
+        die "Can't find information for UUID $UUID"
+    fi
+}
+
+
+query_all() {
+    local MODE="$(syscfg get smart_mode::mode)"
+    # Only allow this on Master
+    BASE_DIR="$(syscfg get subscriber::file_prefix)"
+    if [ -n "$BASE_DIR" -a -d "$BASE_DIR" ]; then
+        for i in $BASE_DIR/DEVINFO/*; do
+            if [ -f "$i" ]; then
+                IP="$(jsonparse data.ip < $i)"
+                local MODE="$(jsonparse data.mode < $i)"
+                if [ "$MODE" = "master" ]; then
+                    UUID="master"
+                else
+                    UUID="$(jsonparse uuid < $i)"
+                fi
+                debout "Fetching sysinfo from $IP"
+                query_one $IP $UUID "$SYSINFO_DIR" &
+            fi
+        done
+        debout "Waiting for communications to finish..."
+        wait
+        sleep 2
+        debout "Done."
+    fi
+}
+
+if [ -n "$DEBUG" ]; then
+    echo "$PROG_NAME Current values:"
+    echo "    USERNAME:  \"$USERNAME\""
+    echo "    PASSWORD:  \"$PASSWORD\""
+    echo "      IPADDR:  \"$IPADDR\""
+    echo "          OP:  \"$OP\""
+    echo "         DIR:  \"$SYSINFO_DIR\""
+    echo "        UUID:  \"$UUID\""
+fi
+
+case $OP in
+    $OP_QUERY_ONE)
+        if [ -n "$UUID" ]; then
+            query_one_by_uuid "$UUID" $SYSINFO_DIR
+        else
+            die "Error: Must provide IP address if not resetting all"
+        fi
+        ;;
+    $OP_QUERY_ALL) query_all ;;
+    "")
+        errout "$PROG_NAME: Nothing to do"
+        usage
+        exit 0
+        ;;
+    *)
+        die "Error unknown operation \"$OP\"."
+        ;;
+esac

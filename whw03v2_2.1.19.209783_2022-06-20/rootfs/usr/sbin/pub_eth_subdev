@@ -1,0 +1,53 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish /WLAN/subdev from the slave to the master
+# usage: pub_wlan_subdev ap_bssid client_mac client_status(connected/disconnected)
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+MAC=$1
+if [ -z "$MAC" ] ;then
+    echo "$(basename $0): Error, missing argument"
+    exit 1
+fi
+MAC_HYPHENATED="$(echo $MAC | sed 's/:/-/g')"
+INTF="$2"
+LINK_STATUS="$3"
+INTF_MAC="$4"
+PORT="$5"
+SPEED="$6"
+
+UUID="$(syscfg get device::uuid)"
+validate UUID
+
+PUB_TOPIC="$(omsg-conf -m ETH_subdev | sed "s/+/$TOPIC_UUID/" | sed "s/+/$MAC_HYPHENATED/"  )"
+validate PUB_TOPIC
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR:      $BIND_ADDR"
+    echo "   HOST_PORT:      $HOST_PORT"
+    echo "   HOST_ADDR:      $HOST_ADDR"
+    echo "   TOPIC:          $PUB_TOPIC"
+    echo "   STATUS:         $STATUS"
+    echo "   MAC_HYPHENATED: $MAC_HYPHENATED"
+    echo "   INTF:           $INTF"
+    echo "   LINK_STATUS:    $LINK_STATUS"
+    echo "   INTF_MAC:       $INTF_MAC"
+    echo "   PORT:           $PORT"
+    echo "   SPEED:          $SPEED"
+fi
+
+mk_infra_payload \
+    -t status \
+    -u "$UUID" \
+    -s "status:$LINK_STATUS" \
+    -s "interface:$INTF" \
+    -s "intf_mac:$INTF_MAC" \
+    -s "port:$PORT" \
+    -s "speed:$SPEED" \
+    -s "client_mac:${MAC}" | \
+      publish "$PUB_TOPIC"

@@ -1,0 +1,75 @@
+#########################################################################
+#!/bin/sh
+
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/service_wifi/wifi_steer_util.sh
+
+BIN=$(basename $0)
+
+usage()
+{
+    echo -e "usage:\n\t$BIN -c <client> -t <ap_bssid>" > /dev/console
+    echo -e "\nsteer a client to specified AP by 11v bss transition management" > /dev/console
+    echo -e "\n\t-c:\tclient mac address" > /dev/console
+    echo -e "\t-t:\ttarget AP bssid" > /dev/console
+    echo -e "example:\n\t$BIN -c 11:22:33:44:55:66 -t 24:F5:A2:24:AF:BB" > /dev/console
+    exit 1
+}
+
+
+die()
+{
+    echo "$*" > /dev/console
+    exit 1
+}
+
+#---------------------------------------------------------------------------------------
+#   Entry of the script
+#---------------------------------------------------------------------------------------
+
+if [ "`syscfg get wifi_steer_11v_debug`" = "1" ]; then
+    set -x
+fi
+
+if [ "2" != "`syscfg get smart_mode::mode`" ]; then
+    dbg_log "only master nodes is privilaged to steer clients, abort"
+    exit 1
+fi
+
+while getopts c:t: OPTION; do
+    case "$OPTION" in
+        c)
+            target_client="$OPTARG"
+            ;;
+        t)
+            target_bssid="$OPTARG"
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+# check input variables, mac format, uuid format, band name (TO DO)
+
+if [ -z "$target_client" -o -z "$target_bssid" ]; then
+    usage
+fi
+
+dbg_log "steering client $target_client to AP $target_bssid by 11v bstm"
+
+lock_file=/var/lock/wifi_steer_11v.lock
+(
+flock -n 9 || die "Only one instance is allowed to be running at a time"
+target_chan=$(get_bssid_chan $target_bssid)
+if [ -z "$target_chan" ]; then
+    dbg_log "target channel is not avaiable, exit"
+    exit 1
+else
+    dbg_log "arg: ($target_client) ($target_bssid) ($target_chan)"
+    pub_nodes_steering_start $target_client $target_bssid $target_chan
+    exit 0
+fi
+) 9>$lock_file
+

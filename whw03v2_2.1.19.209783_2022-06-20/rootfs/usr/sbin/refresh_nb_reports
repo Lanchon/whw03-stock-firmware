@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Direct all Slave Nodes to submit fresh neighbor reports
+#
+
+# Set common values
+source /etc/init.d/sub_pub_funcs.sh
+
+PROG_NAME="$(basename $0)"
+
+PUB_TOPIC="$(omsg-conf -s REPORT-NEIGHBORS)"
+validate PUB_TOPIC
+
+if [ "$DEBUG" = "1" ];then
+    echo "Options:"
+    echo "   BIND_ADDR:      $BIND_ADDR"
+    echo "   HOST_PORT:      $HOST_PORT"
+    echo "   HOST_ADDR:      $HOST_ADDR"
+    echo "   TOPIC:          $PUB_TOPIC"
+    echo "   STATUS:         $STATUS"
+fi
+
+echo "Forcing scan-table update + neighbor report on all Slaves"
+
+mk_infra_payload -t cmd | publish $PUB_TOPIC

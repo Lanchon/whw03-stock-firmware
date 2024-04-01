@@ -1,0 +1,96 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish some backhaul status data to a MQTT topic
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PUB_TOPIC="$(omsg-conf -m WLAN_status | sed "s/+/${TOPIC_UUID}/")"
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   STATUS   : $STATUS"
+fi
+
+CHANNEL=` iwlist ath1 channel 2>/dev/null | grep 'Current Frequency' | awk -F'Channel' '{print $2}' | sed 's/ //g' | awk -F')' '{print $1}' | egrep "^[0-9]+$" `
+if [ "$CHANNEL" -ge "36" -a "$CHANNEL" -lt "65" ]; then
+	INTF="5GL"
+else
+	INTF="5GH"
+fi
+
+USERAP2G_BSSID="`ifconfig ath0 2>/dev/null | awk '/HWaddr [0-9a-fA-F:]{17}/ {print $5}'`"
+if [ $? -ne 0 ]; then
+	echo "$(basename $0): Error, Failed to get userAp2G_bssid"
+fi
+USERAP2G_CHANNEL="`iwlist ath0 channel 2>/dev/null | awk '/Current Frequency.*(Channel.*)/ {print $5}' | sed 's/)//g'`"
+if [ $? -ne 0 ]; then
+	echo "$(basename $0): Error, Failed to get userAp2G_channel"
+fi
+if [ "`cat /etc/product`" = "nodes-jr" ]; then
+# nodes-jr only have one 5G radio
+	PHY_AP5G_BSSID="`ifconfig ath1 2>/dev/null | awk '/HWaddr [0-9a-fA-F:]{17}/ {print $5}'`"
+	if [ $? -ne 0 ]; then
+		echo "$(basename $0): Error, Failed to get userAp5GL_bssid!"
+	fi
+	PHY_AP5G_CHANNEL="`iwlist ath1 channel 2>/dev/null | awk '/Current Frequency.*(Channel.*)/ {print $5}' | sed 's/)//g'`"
+	if [ $? -ne 0 ]; then
+		echo "$(basename $0): Error, Failed to get userAp5GL_channel"
+	fi
+	if [ "$INTF" = "5GL" ]; then
+		USERAP5GL_BSSID=$PHY_AP5G_BSSID
+		USERAP5GL_CHANNEL=$PHY_AP5G_CHANNEL
+	elif [ "$INTF" = "5GH" ]; then
+		USERAP5GH_BSSID=$PHY_AP5G_BSSID
+		USERAP5GH_CHANNEL=$PHY_AP5G_CHANNEL
+	fi
+else
+	USERAP5GL_BSSID="`ifconfig ath1 2>/dev/null | awk '/HWaddr [0-9a-fA-F:]{17}/ {print $5}'`"
+	if [ $? -ne 0 ]; then
+		echo "$(basename $0): Error, Failed to get userAp5GL_bssid!"
+	fi
+	USERAP5GL_CHANNEL="`iwlist ath1 channel 2>/dev/null | awk '/Current Frequency.*(Channel.*)/ {print $5}' | sed 's/)//g'`"
+	if [ $? -ne 0 ]; then
+		echo "$(basename $0): Error, Failed to get userAp5GL_channel"
+	fi
+	USERAP5GH_BSSID="`ifconfig ath10 2>/dev/null | awk '/HWaddr [0-9a-fA-F:]{17}/ {print $5}' `"
+	if [ $? -ne 0 ]; then
+		echo "$(basename $0): Error, Failed to get userAp5GH_bssid"
+	fi
+	USERAP5GH_CHANNEL="`iwlist ath10 channel 2>/dev/null | awk '/Current Frequency.*(Channel.*)/ {print $5}' | sed 's/)//g'`"
+	if [ $? -ne 0 ]; then
+		echo "$(basename $0): Error, Failed to get userAp5GH_channel"
+	fi
+fi
+if [ "`syscfg get guest_enabled`" = "1" ] && [ "`syscfg get wl0_guest_enabled`" = "1" ]; then
+	GUESTAP2G_BSSID="`ifconfig ath2 2>/dev/null | awk '/HWaddr [0-9a-fA-F:]{17}/ {print $5}'`"
+	if [ $? -ne 0 ]; then
+		echo "$(basename $0): Error, Failed to get guestAp2G_bssid"
+	fi
+fi
+if [ "`syscfg get guest_enabled`" = "1" ] && [ "`syscfg get wl1_guest_enabled`" = "1" ]; then
+	GUESTAP5G_BSSID="`ifconfig ath3 2>/dev/null | awk '/HWaddr [0-9a-fA-F:]{17}/ {print $5}'`"
+	if [ $? -ne 0 ]; then
+		echo "$(basename $0): Error, Failed to get guestAp5G_bssid"
+	fi
+fi
+
+mk_infra_payload \
+    -t status \
+    -u "$UUID" \
+    -s "ip:$(if_to_ip br0)" \
+    -s "userAp2G_bssid:$USERAP2G_BSSID" \
+    -s "userAp2G_channel:$USERAP2G_CHANNEL" \
+    -s "guestAp2G_bssid:$GUESTAP2G_BSSID" \
+    -s "userAp5GL_bssid:$USERAP5GL_BSSID" \
+    -s "userAp5GL_channel:$USERAP5GL_CHANNEL" \
+    -s "userAp5GH_bssid:$USERAP5GH_BSSID" \
+    -s "userAp5GH_channel:$USERAP5GH_CHANNEL" \
+    -s "guestAp5G_bssid:$GUESTAP5G_BSSID" | \
+     publish "$PUB_TOPIC"

@@ -1,0 +1,32 @@
+#!/bin/sh
+
+OLD_IFS=$IFS
+IFS=","
+LIST="$(syscfg get infra_services)"
+
+# printf "LIST: \"%s\".\n" "$LIST"
+
+extract_svc() {
+    echo "$1" | cut -f1 -d/
+}
+
+extract_port() {
+    PORT="$(echo "$1" | cut -s -f2 -d"/")"
+    PORT=${PORT:-"port"}
+    echo $PORT
+}
+
+for SERVICE in $LIST
+do
+    SVC_NAME="$(extract_svc $SERVICE)"
+    PORT_NAME="$(extract_port $SERVICE)"
+    NAME="${SVC_NAME}::${PORT_NAME}"
+    VAL=$(syscfg get $NAME)
+    if [ -n "$VAL" ]; then
+        echo "service::${SVC_NAME}::location=$VAL"
+    else
+        echo "No port found for service $SERVICE; skipping"  >&2
+    fi
+done
+
+IFS=$OLD_IFS

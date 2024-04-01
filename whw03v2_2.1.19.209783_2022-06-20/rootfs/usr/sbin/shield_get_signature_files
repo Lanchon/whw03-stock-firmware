@@ -1,0 +1,92 @@
+#!/usr/bin/lua
+
+--
+-- 2021 Belkin International, Inc. and/or its affiliates. All rights reserved.
+--
+-- $Author$
+-- $DateTime$
+-- $Id$
+--
+-- shield_get_signature_files.lua - Script to retrieve the TM threat signature files from the cloud.
+-- 
+
+local sysctx = require('libsysctxlua')
+local platform = require('platform')
+local cloud = require('cloud')
+local lfs = require('lfs')
+local sc = sysctx.new()
+
+local PROG_NAME = string.match(arg[0], ".*/(.*)")
+local SHM_CONFIG_DIR = '/tmp/var/config/tmshn'
+local RULES_FILENAME = 'rule.trf'
+local METADATA_FILENAME = 'meta_en-US.dat'
+local NAME_FILE_MAP = {
+    ruleUrl = RULES_FILENAME,
+    metaDataUrl = METADATA_FILENAME
+}
+
+local function log(level, message)
+    os.execute(('TZ=UTC logger -s -t %s "%s: %s"'):format(PROG_NAME, level, message))
+end
+
+local function _main()
+    local cmd, lastModified
+    local fileURLs = {}
+
+    -- Get the signature file data from the cloud
+    local err, sigInfo = cloud.getAssetData(sc, 'shieldsignaturefiles')
+    assert(not err, err)
+
+    -- Get the timestamp of our current signature file
+    sc:readlock()
+    local curTimestamp = sc:get_shield_threat_signature_timestamp()
+    sc:rollback()
+
+    -- Process the signature file data
+    for i = 1, #sigInfo do
+        if sigInfo[i].name == 'lastModified' then
+            lastModified = sigInfo[i].value
+            -- If the cloud 'lastModified' value is equal to our current timetamp
+            -- then our signature file is up to date.
+            if (curTimestamp == lastModified) then
+                log(platform.LOG_INFO, 'signature file is current - will not download')
+                return
+            end
+        else
+            fileURLs[sigInfo[i].name] = sigInfo[i].value
+        end
+    end
+
+    -- Download the signature files
+    cmd = 'wget %s -O /tmp/%s'
+    for name, url in pairs(fileURLs) do
+        assert(os.execute(cmd:format(url, NAME_FILE_MAP[name])) == 0)
+    end
+
+    -- Move the files to their permanent location
+    cmd = 'mv -f /tmp/%s '..SHM_CONFIG_DIR
+    assert(os.execute(cmd:format(RULES_FILENAME)) == 0)
+    assert(os.execute(cmd:format(METADATA_FILENAME)) == 0)
+
+    -- Update the signature timestamp in syscfg
+    sc:writelock()
+    sc:set_shield_threat_signature_timestamp(lastModified)
+    sc:commit()
+end
+
+-------------------------------------------------
+-- Main Entry
+-------------------------------------------------
+platform.registerLoggingCallback(log)
+
+local success, err = pcall(_main)
+if success then
+    sc:setevent('shield::last_signature_check', os.time())
+    sc:commit()
+    log(platform.LOG_INFO, 'done.')
+else
+    log(platform.LOG_ERROR, err)
+    -- Clean up the temporary files
+    os.execute('rm -f /tmp/'..RULES_FILENAME)
+    os.execute('rm -f /tmp/'..METADATA_FILENAME)
+end

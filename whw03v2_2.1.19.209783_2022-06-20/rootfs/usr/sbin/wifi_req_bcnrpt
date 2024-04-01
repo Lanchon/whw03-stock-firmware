@@ -1,0 +1,155 @@
+#########################################################################
+#!/bin/sh
+
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/service_wifi/wifi_steer_util.sh
+
+BIN=$(basename $0)
+
+usage()
+{
+    echo -e "usage:\n\t$BIN -c <client>" > /dev/console
+    echo -e "\nrequest client to report beacons received (11k)" > /dev/console
+    echo -e "\n\t-c:\tclient mac address" > /dev/console
+    echo -e "example:\n\t$BIN -c 11:22:33:44:55:66" > /dev/console
+    exit 1
+}
+
+die ()
+{
+    echo "$*" > /dev/console
+    exit 1
+}
+
+#---------------------------------------------------------------------------------------
+#   Entry of the script
+#---------------------------------------------------------------------------------------
+
+
+    
+while getopts c:d OPTION; do
+    case "$OPTION" in
+        c)
+            sta_mac="$OPTARG"
+            ;;
+
+        d)  DEBUG=1 ;;
+
+        *)
+            ;;
+    esac
+done
+
+if [ -z "$sta_mac" ]; then
+    usage
+fi
+
+dbg_log "request client $sta_mac to do beacon report "
+serving_ap=""
+for ap in $(syscfg get lan_wl_physical_ifnames)
+do
+    is_client_associated $ap $sta_mac
+    ret="$?"
+    if [ "$ret" = "1" ]; then
+        serving_ap="$ap"
+        break;
+    fi
+done
+if [ -z "$serving_ap" ]; then
+    dbg_log "client is not associated to any band of the unit, abort"
+    exit 1
+fi
+
+# check whether the client is rrm compatible
+
+is_client_rrm_compatible "$serving_ap" "$sta_mac"
+    
+if [ "$?" != "1" ]; then
+    dbg_log "client $sta_mac is not rrm compatible or error occur, abort"
+    exit 1
+fi
+# These syscfgs are only for debug purpose
+
+regclass="`syscfg get wifi::req_bcnrpt_regclass`"
+if [ -z "$regclass" ]; then
+    regclass="0"
+fi
+channum="`syscfg get wifi::req_bcnrpt_channum`"
+if [ -z "$channum" ]; then
+    channum="0"
+fi
+rand_ivl="`syscfg get wifi::req_bcnrpt_rand_ivl`"
+if [ -z "$rand_ivl" ]; then
+    rand_ivl="0" 
+fi
+duration="`syscfg get wifi::req_bcnrpt_duration`"
+if [ -z "$duration" ]; then
+    duration="200"
+fi
+mode="`syscfg get wifi::req_bcnrpt_mode`"
+if [ -z "$mode" ]; then
+    #0--passive, 1--active, 2--beacon table
+    mode="0"
+fi
+req_ssid="`syscfg get wifi::req_bcnrpt_req_ssid`"
+if [ -z "$req_ssid" ]; then
+    # match ssid
+    req_ssid="1"
+fi
+rep_cond="`syscfg get wifi::req_bcnrpt_rep_cond`"
+if [ -z "$rep_cond" ]; then
+    rep_cond="0"
+fi
+rpt_detail="`syscfg get wifi::req_bcnrpt_rpt_detail`"
+if [ -z "$rpt_detail" ]; then
+    rpt_detail="0"
+fi
+req_ie="`syscfg get wifi::req_bcnrpt_req_ie`"
+if [ -z "$req_ie" ]; then
+    req_ie="0"
+fi
+chanrpt_mode="`syscfg get wifi::req_bcnrpt_chanrpt_mode`"
+if [ -z "$chanrpt_mode" ]; then
+    chanrpt_mode="0"
+fi
+
+if [ "$DEBUG" = "1" ]; then
+    echo "serving_ap: \"$serving_ap\""
+    echo "sta_mac:    \"$sta_mac\""
+    echo "regclass:   \"$regclass\""
+    echo "channum:    \"$channum\""
+    echo "rand_ivl:   \"$rand_ivl\""
+    echo "duration:   \"$duration\""
+    echo "mode:       \"$mode\""
+    echo "req_ssid:   \"$req_ssid\""
+    echo "rep_cond:   \"$rep_cond\""
+    echo "rpt_detail: \"$rpt_detail\""
+    echo "req_ie:     \"$req_ie\""
+    exit 1
+fi
+
+lock_file="/var/lock/wifi_req_bcnrpt.$serving_ap"
+(
+    flock 9
+    dbg_log "fire beacon report request to the client"
+    wifitool $serving_ap sendbcnrpt $sta_mac $regclass $channum $rand_ivl $duration $mode $req_ssid $rep_cond $rpt_detail $req_ie $chanrpt_mode
+
+    # the bcnrpt may come up very late, I saw about 10s with iphone 
+    # while it's very quick with samsung s7. We wait at most 16s for the report
+
+    try=1
+    max_try=8
+    wait_time="2"
+    while [ "$try" -le "$max_try" ]; do
+        sleep "$wait_time"
+        rpt=`wifitool $serving_ap bcnrpt | sed -n '2p'`
+        if [ -n "$rpt" -o "$try" = "$max_try" ]; then
+            wifitool $serving_ap bcnrpt
+            break
+        fi
+        try=`expr $try + 1` 
+    done
+) 9>$lock_file
+
+exit 0

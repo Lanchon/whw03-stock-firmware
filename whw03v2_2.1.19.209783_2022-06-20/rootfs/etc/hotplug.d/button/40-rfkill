@@ -1,0 +1,30 @@
+#
+# Copyright (c) 2014 Belkin International, Inc..
+#
+# All Rights Reserved.
+# Belkin International Inc Confidential and Proprietary.
+#
+
+if [ "$ACTION" = "released" -a "$BUTTON" = "BTN_9" ]; then
+	echo "" > /dev/console
+	echo "WIFI ON/OFF PUSH BUTTON EVENT DETECTED" > /dev/console
+	CNT=`sysevent get wifi_button_cnt`
+	if [ "" = "${CNT}" ]; then
+		sysevent set wifi_button_cnt 1
+		CNT=0
+	fi
+	CNT=`expr ${CNT} + 1`
+	echo "wifi button cnt=${CNT}" > /dev/console
+	sysevent set wifi_button_cnt ${CNT}
+	SYSCFG_led_ui_rearport=`syscfg get led_ui_rearport`
+
+	if [ "$SYSCFG_led_ui_rearport" != "0" ] ; then
+		echo wifi_led_reverse > /proc/bdutil/leds
+	fi
+
+	if [ "1" = "${CNT}" ]; then
+		sysevent set wifi_button-status pressed
+		echo 'valid wifi button event' > /dev/console
+		sysevent set wifi_config_changed
+	fi
+fi

@@ -1,0 +1,254 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+
+opts     = {} -- This needs to be global
+local cli      = require "cliargs"
+local hdk      = require 'libhdklua'
+local json     = require 'libhdkjsonlua'
+local platform = require 'platform'
+local sysctx   = require 'libsysctxlua'
+local dev      = require 'device'
+local cloud    = require 'cloud'
+local util     = require 'nodes.util'
+local dbutil   = require 'nodes.util.devdb'
+local nutil    = require 'nodes.util'
+local nucloud  = require 'nodes.util.cloud'
+local process  = require 'nodes.util.process'
+local lfs      = require 'lfs'
+local Flocker  = require 'nodes.util.flocker'
+
+local SC = sysctx.new()
+
+local EVENT_TYPES = {
+   ROUTER_OFFLINE = "ROUTER_OFFLINE",
+   SLAVE_OFFLINE  = "DEVICE_LEFT_NETWORK",
+}
+
+local NODE_TYPES = {
+   MASTER = "master",
+   SLAVE  = "slave"
+}
+
+-- Harvest some system information
+local prog_name = string.match( arg[0], ".*/(.*)" )
+
+function gather_sys_data()
+   -- Unlike its' friends, get_device_uuid() requires sysctx be
+   -- already readlocked.
+   -- (If it is not you simply get a NULL for a UUID.)
+   SC:readlock()
+   local xdeviceUUID = SC:get_device_uuid()
+   local sys_data = {
+      ownedsc         = SC,
+      host            = dev.getCloudHost(SC),
+      deviceUUID      = xdeviceUUID,
+      deviceID        = hdk.uuid( xdeviceUUID ),
+      networkID       = SC:get_xrac_owned_network_id() or "",
+      networkPassword = SC:get_xrac_owned_network_password() or "",
+      eventTime       = platform.getCurrentLocalTime(SC),
+      verifyHost      = dev.getVerifyCloudHost(SC),
+   }
+   -- Release lock.  Note this would be needed even if we were'nt
+   -- explicitly taking a readlock because several of the above sysctx
+   -- accessors automatically do.
+   SC:rollback()
+   return sys_data
+end
+
+
+--! @brief Make payload for cloud.
+--! Create a cloud API compliant payload based on the off-line message
+--! payload from the Slave
+--! @param slave_data A table containing the JSON MQTT message data
+function make_cloud_payload( slave_payload )
+   local ISO_8601_COMBO_FMT = "!%FT%TZ"
+   local friendlyName = slave_payload.hostname
+      and dbutil.get_user_friendly_name( slave_payload.uuid )
+      or ""
+   -- For nodes, the network name is the SSID.  Also for Nodes, all
+   -- non-guest user-facing Wi-Fi radios have the same SSID
+   local ssid = nucloud.get_nodes_ssid()
+   if opts.debug then print( "ssid:", ssid ) end
+
+   local data = {
+      utcTimestamp = os.date( ISO_8601_COMBO_FMT ),
+      nodeType     = NODE_TYPES.SLAVE,
+      uuid         = slave_payload.uuid,
+      networkDevice = {
+         hostname     = slave_payload.hostname,
+         model        = slave_payload.model,
+         networkId    = SC:get_xrac_owned_network_id() or "",
+         serialNumber = slave_payload.serialNumber,
+         friendlyName = friendlyName,
+         ssid         = ssid
+      }
+   }
+
+   return data
+end
+
+-- For debug mode.  Just dump out the data we harvested above
+function diagnostic_dump( sys )
+   nutil.diagnostic_dump( sys, {
+      "deviceUUID", "eventTime", "host", "networkID",
+      "networkPassword", "verifyHost"
+   })
+end
+
+local DEFAULT_LOCK_TIMEOUT = 30
+local DEFAULT_IO_TIMEOUT   = DEFAULT_LOCK_TIMEOUT - 10
+
+function parse_args()
+   -- Set up command line options
+   cli:set_name( prog_name )
+   cli:set_description( 'Generate cloud notification for offline Node' )
+   cli:argument( "INPUT",             "Path to MQTT payload file"                     )
+   cli:flag(     "-d, --debug",       "Show debugging output",   false                )
+   cli:flag(     "-n, --dry-run",     "No cloud communication",  false                )
+   cli:flag(     "-r, --retry",       "Retry on error",          false                )
+   cli:flag(     "-c, --count",       "Retry count, 0=infinite", 0                    )
+   cli:option(   "-l, --lock-to=TO",  "Lock timeout",            DEFAULT_LOCK_TIMEOUT )
+   cli:option(   "-i, --io-to=TO",    "Cloud I/O timeout",       DEFAULT_IO_TIMEOUT   )
+   cli:flag(     "-v, --verbose",     "Be verbose",              false                )
+   cli:flag(     "-h, --help",        "This help"                                     )
+
+   local args, err = cli:parse()
+
+   if not args and err then
+      print( err )
+      os.exit(1)
+   else
+      local opts = {
+         debug   = not not args.debug,
+         verbose = not not args.verbose,
+         fname   = args.INPUT,
+         io_to   = tonumber(args["io-to"]),
+         lock_to = tonumber(args["lock-to"]),
+         dry_run = not not args["dry-run"]
+      }
+      -- If debug is set, dump out the options now
+      if opts.debug then
+         print( cli.name .. " options:" )
+         for k,v in pairs( opts ) do
+            print( string.format( "%12s: (%s)", k, tostring( v )))
+         end
+      end
+      return opts
+   end
+end
+
+--! @brief Load "node-offline" message payload file.
+--! This is JSON data
+--! published by a wired Node as its' Last Will.
+--! @param filename File name of payload file
+--! @return On success: paylaod data as a table & nil
+--!         On error:   nil, error message string
+function get_offline_data( filename )
+   local data  = nil
+   local jdata = nil
+   local err   = nil
+   local storage,err = io.open( filename, "r+" )
+
+   if storage then
+      local raw_data = storage:read("*all")
+      storage:close()
+      jdata,err = json.parse( raw_data )
+      if jdata then
+         data = {
+            hostname     = jdata.data.hostname,
+            serialNumber = jdata.data.serialNumber,
+            uuid         = jdata.uuid,
+            model        = jdata.data.model
+         }
+      else
+         err = "Unable to parse JSON data: " .. tostring( err )
+      end
+   else
+      err = "Unable to open filename: " .. tostring( filename )
+   end
+   return data, err
+end
+
+
+--! @brief String encode a string.
+--! Currently this just replaces each double-quote (") with a
+--! backslash double-quote sequence (\").
+function string_encode( s )
+   s = s or ""
+   if type( s ) == 'table' then
+      s = json.stringify( s )
+   end
+   return string.gsub( s, '"', '\\"' )
+end
+
+local function fail( err )
+   print( prog_name .. " Error: " .. err )
+   os.exit( 1 )
+end
+
+
+function _main()
+   opts = parse_args()
+   -- Prevent multiple simultaneous execution
+   local flock = Flocker:new{ lock_file = "/var/lock/"..prog_name }
+   local locked, why_not = flock:wait_for_lock( opts.lock_to )
+
+   if locked then
+      sys = gather_sys_data()
+      if opts.debug then
+         print( "Dumping system data..." )
+         diagnostic_dump( sys )
+      end
+
+      if opts.verbose then
+         print( "Processing JSON file '" .. opts.fname .. "'" )
+      end
+      -- FIXME:: Localize!
+      slave_data = get_offline_data( opts.fname )
+
+      -- FIXME:: Localize!
+      cloud_data = make_cloud_payload( slave_data )
+
+      if cloud_data then
+         if opts.debug then
+            print( "Cloud data: " )
+            for k,v in pairs( cloud_data ) do
+               print( k,v )
+            end
+         end
+         -- FIXME:: Localize!
+         raw_cloud_data = json.stringify( cloud_data )
+         -- payload = string_encode( raw_cloud_data )
+         payload = raw_cloud_data
+         if opts.debug then
+            print( string.format( "Proposed payload:\n%s\n", payload ))
+            print( string.format( "raw_cloud_data:\n%s\n", raw_cloud_data ))
+         end
+         -- Schedule process termination in case cloud communications hang
+         local TERM_TIME = opts.io_to
+         if opts.debug then print( "Scheduled termination time in seconds:", TERM_TIME ) end
+         process.killme( TERM_TIME )
+
+         local err, id = nucloud.post_offline_node_event( sys, payload )
+         if err then fail( err ) end
+         if opts.verbose then
+            print( "Cloud call succeeded, event ID " .. tostring( id ))
+         end
+      else
+         fail( err )
+      end
+      flock:unlock()
+      if opts.verbose then
+         print( "Done" )
+      end
+   else -- locking failed
+      print( ("Couldn't lock '%s': '%s'"):format( tostring( arg[0] ), tostring( why_not )))
+      os.exit( 1 )
+   end
+end
+
+local ok, err = pcall( _main )
+if not ok then
+   print( prog_name .. " error: " .. tostring( err ))
+   SC:rollback()
+end

@@ -1,0 +1,39 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Get the connected nodes' device uuid from the BH directory.
+
+PROG_NAME="$(basename $0)"
+if [ "$#" -lt 1 ]; then
+    cat <<EOF
+$PROG_NAME: Error - missing argument
+Usage: $PROG_NAME {BH dir path}
+EOF
+    exit 1
+fi
+
+BH_DIR=${1%%/}
+
+SLAVELIST=""
+check_slave_online list >/dev/null
+if [ $? -eq 0 ];then
+  SLAVELIST=`check_slave_online list`
+fi
+
+if [ -d $BH_DIR ]; then
+    for item in $(ls -d ${BH_DIR}/*/); do
+        device_uuid=`echo ${item} | cut -f5 -d'/'`
+		#check the connection status
+		echo $SLAVELIST | grep "$device_uuid" > /dev/null
+		if [ $? -ne 0 ] ;then
+			#not a online slave
+			continue
+		fi
+        echo ${device_uuid%%/}
+    done
+    exit 0
+else
+    echo "$BH_DIR does not exists" > /dev/console
+    exit 1
+fi

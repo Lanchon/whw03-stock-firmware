@@ -1,0 +1,277 @@
+#!/bin/sh
+#
+# Generate a simple backhaul report on based on cached message files.
+#
+
+PROGNAME=$(basename $0)
+DEFAULT_SLEEP_TIME=30
+VERSION="0.1.3"
+SHOW_DISCON=0
+SLEEP_TIME=$DEFAULT_SLEEP_TIME
+CACHE_DIR="/tmp/msg"
+DEBUG=""
+UNSORTED=""
+# LOOP unset
+JSON_PREAMBLE="{ \"bh_report\": ["
+JSON_POSTSCRIPT="]}"
+
+usage() {
+    printf "Usage:\n"
+    printf "    \t%s [-h] [-l] [-t{timeout}] [-v]\n" $PROGNAME
+    printf "Where:\n"
+    printf "  -l\t\tContinuously loop generating report\n"
+    printf "  -t{time}\tTime between report loops (default %d seconds)\n" $DEFAULT_SLEEP_TIME
+    printf "  -u\t\tUnsorted\n"
+    printf "  -r\t\tRCPI mode: show signal strength as RCPI (default: RSSI)\n"
+    printf "  -v\t\tShow version\n"
+    printf "  -h\t\tThis help\n"
+    printf "  -j\t\tProduce JSON output (implies -u)\n"
+    printf "\n"
+    printf " Note: -t{time} has no effect without -l.\n"
+}
+
+fail() {
+    echo "$*" >&2
+    usage
+    exit 1
+}
+
+while getopts ":rdhjm:lt:uvx" opt;do
+    case $opt in
+        d)  DEBUG=1 ;;
+        j)  JSON=1 ; UNSORTED=1 ;;
+        l)  LOOP=1  ;;
+        m)  CACHE_DIR=$OPTARG ;;
+        r)  RCPI_MODE=1 ;;
+        t)  SLEEP_TIME="$OPTARG" ;;
+        u)  UNSORTED=1 ;;
+        v)  printf "%s version %s\n" "$PROGNAME" "$VERSION" ; exit 0 ;;
+        h)  usage ; exit 0 ;;
+        ?)  fail "Invalid option: -$OPTARG" ;;
+        :)  fail "Option -${OPTARG} needs an argument." ;;
+    esac
+done
+shift $((OPTIND-1))
+
+BACKHAULS_DIR="$CACHE_DIR/BH"
+DEVINFO_DIR="$CACHE_DIR/DEVINFO"
+WLAN_DIR="$CACHE_DIR/WLAN"
+
+if [ ! -d "$BACKHAULS_DIR" ]; then
+    if [ $JSON ]; then
+        echo "${JSON_PREAMBLE}${JSON_POSTSCRIPT}"
+    else
+        echo "No backhaul data found"
+    fi
+    exit 0
+fi
+
+STATUS_TAG='"status" *:"'
+
+FMT="%12s  %-15s  %-15s  %5s  %-6s  %12s  %9s  %5s %-12s\n"
+header() {
+    local SIG_LABEL
+    if [ $RCPI_MODE ]; then
+        SIG_LABEL="RCPI(AP/STA)"
+    else
+        SIG_LABEL="RSSI(AP/STA)"
+    fi
+    printf "$FMT"   "Node (MAC)"      "NODE IP"         "PARENT IP"     "Intf."   "Chan."  "$SIG_LABEL"    "Speed"    "State" "Timestamp"
+    printf "$FMT" "------------"  "---------------"  "---------------"  "-----"  "-----"  "------------"  "---------"  "-----" "------------"
+}
+
+# $1: FMT
+# $2 value
+# $3 alternative if value is ""
+num_fmt() {
+    local RESULT="$3"
+    if [ -n "$2" ]; then
+        RESULT="$(printf "$1" "$2")" 2> /dev/null
+    fi
+    echo "$RESULT"
+}
+
+# Format item report as JSON
+#  $1: UUID
+#  $2: IP
+#  $3: Parent IP
+#  $4: Channel
+#  $5: ap RSSI
+#  $6: station RSSI
+#  $7: Rate
+#  $8: State
+#  $9: ap_bssid
+#  $9: sta_bssid
+# $10: interface
+# $11: state
+# $12: timestamp
+json_fmt_item () {
+    local ARGS=""
+    [ $1 ]  && ARGS="$ARGS -s uuid:$1"
+    [ $2 ]  && ARGS="$ARGS -s ip:$2"
+    [ $3 ]  && ARGS="$ARGS -s parent_ip:$3"
+    [ $4 ]  && ARGS="$ARGS -s channel:$4"
+    [ $5 ]  && ARGS="$ARGS -r rssi_sta:$5"
+    [ $6 ]  && ARGS="$ARGS -r rssi_ap:$6"
+    [ $7 ]  && ARGS="$ARGS -r speed:$7"
+    [ $8 ]  && ARGS="$ARGS -s ap_bssid:$8"
+    [ $9 ]  && ARGS="$ARGS -s sta_bssid:$9"
+    [ $10 ] && ARGS="$ARGS -s interface:$10"
+    [ $11 ] && ARGS="$ARGS -s state:$11"
+    [ $12 ] && ARGS="$ARGS -r timestamp:$12"
+    jsongen $ARGS
+}
+
+# Parse a JSON file & extract a named value.
+# $1: Attribute to extract
+# $2: File to parse
+# $3: (optional) default value
+jparse () {
+    local KEY="$1"
+    local FILE="$2"
+    local DEFAULT="$3"
+    local VALUE="$(jsonparse -f "$FILE" "$KEY" 2>/dev/null)"
+    echo ${VALUE:-$DEFAULT}
+}
+
+# $1 path to back-haul directory
+report_item() {
+    local STATUS_FILE="$1/status"
+    local TYPE="$(jparse data.type $STATUS_FILE)"
+    local PIPFILE="$1/status.parent_ip"
+    local PARENT_IP=""
+    if [ "$TYPE" = "WIRED" ]; then
+        PARENT_IP="$(sysevent get master::ip)"
+    elif [ -f "$PIPFILE" ]; then
+        PARENT_IP="$(cat $PIPFILE)"
+    else
+        PARENT_IP="Unknown"
+    fi
+
+    if [ ! -f "$STATUS_FILE" ]; then
+        return
+    fi
+    local IP="$(jparse data.ip $STATUS_FILE)"
+    local TIMESTAMP=$(stat -c %Y $STATUS_FILE)
+    local CHANNEL
+    local STA_BSSID=""
+    local AP_BSSID=""
+    if [ "$TYPE" = "WIRED" ]; then
+        CHANNEL="wired"
+    else
+        CHANNEL="$(jparse data.channel $STATUS_FILE)"
+        STA_BSSID="$(jparse data.sta_bssid $STATUS_FILE)"
+        AP_BSSID="$(jparse data.ap_bssid $STATUS_FILE)"
+    fi
+    local RAW_UUID="$(jparse uuid $STATUS_FILE)"
+    local UUID="$(echo $RAW_UUID | cut -c25-)"
+    local RSSI=""
+    local PAR_RSSI=""
+    local STA_RSSI="$(jparse data.rssi $STATUS_FILE)"
+    [ $RCPI_MODE ] && [ "$STA_RSSI" != "0" ] && STA_RSSI="$(rssi_to_rcpi $STA_RSSI)"
+    local STATE="$(jparse data.state $STATUS_FILE)"
+    local PERFFILE="$1/status.performance"
+    local MAC="$(jparse data.sta_bssid $STATUS_FILE  | tr '[A-Z:]' '[a-z-]')"
+    local RATE="0"
+    if [ "$TYPE" = "WIRED" ]; then
+        RATE="1024.000"
+    else
+        if [ -f "$PERFFILE" ]; then
+            if [ $JSON ]; then
+                RATE="$(jparse data.rate $PERFFILE)"
+            else
+                RATE="$(printf "%9.5f" "$(jparse data.rate $PERFFILE)")"
+            fi
+            TIMESTAMP=$(stat -c %Y $PERFFILE)
+        fi
+    fi
+    local PAR_STAT="down"
+    if [ -n "$MAC" ]; then
+        local CANDIDATE_DIRS="$(find $WLAN_DIR -name $MAC )"
+        [ "$DEBUG" ] && echo "CANDIDATE_DIRS: $CANDIDATE_DIRS, MAC: $MAC" 1>&2
+        local PAR_STAT_FILE=""
+        if [ -n "$CANDIDATE_DIRS" ]; then
+            local CANDIDATE_FILES="$(find $CANDIDATE_DIRS -name status)"
+            [ "$DEBUG" ] && echo "  CANDIDATE_FILES: $CANDIDATE_FILES" 1>&2
+            if [ -n "$CANDIDATE_FILES" ]; then
+                PAR_STAT_FILE="$(ls -1rt $CANDIDATE_FILES | tail -1)"
+            fi
+        fi
+        [ "$DEBUG" ] && 1>&2 echo "  PAR_STAT_FILE: $PAR_STAT_FILE"
+        PAR_RSSI="0"
+        if [ -f "$PAR_STAT_FILE" ]; then
+            # Use latest data from either the parent subdevice or backhaul status
+            if [ "$PAR_STAT_FILE" -nt "$STATUS_FILE" ]; then
+                PAR_STAT="$(jparse data.status $PAR_STAT_FILE)"
+                if [ "$PAR_STAT" = "connected" ]; then PAR_STAT="up"; else PAR_STAT="down"; fi
+            else
+                PAR_STAT="$(jparse data.state $STATUS_FILE)"
+            fi
+            PAR_RSSI="$(jparse data.rssi $PAR_STAT_FILE)"
+            if [ -n "$PAR_RSSI" ]; then
+                [ $RCPI_MODE ] && [ "$PAR_RSSI" != "0" ] && PAR_RSSI="$(rssi_to_rcpi $PAR_RSSI)"
+                RSSI="$(printf "%s/%s" "$STA_RSSI" "$PAR_RSSI")"
+            else
+                STA_RSSI=${STA_RSSI:-0}
+                PAR_RSSI="${PAR_RSSI:-0}"
+                RSSI=$STA_RSSI
+            fi
+        else
+            echo "(Couldn't find $PAR_STAT_FILE for $RAW_UUID)" 1>&2
+        fi
+    else
+        [ "$DEBUG" ] && 1>&2 echo "Could not determine MAC for $RAW_UUID"
+        PAR_STAT="$(jparse data.state $STATUS_FILE)"
+        STA_RSSI=${STA_RSSI:-0}
+        PAR_RSSI="${PAR_RSSI:-0}"
+        RSSI=$STA_RSSI
+    fi
+    local INTF="$(jparse data.intf "$STATUS_FILE")"
+    if [ $JSON ]; then
+        json_fmt_item "$RAW_UUID" "$IP"       "$PARENT_IP" "$CHANNEL" \
+                      "$PAR_RSSI" "$STA_RSSI" "$RATE"      "$AP_BSSID" \
+                      "$STA_BSSID" "$INTF" "$PAR_STAT" "$TIMESTAMP"
+    else
+        printf "$FMT" "$UUID" "$IP" "$PARENT_IP" "$INTF" "$CHANNEL" "$RSSI" "$RATE" "$PAR_STAT" "$TIMESTAMP"
+    fi
+}
+
+maybe_sort () {
+    if [ $UNSORTED ]; then
+        cat
+    else
+        sort
+    fi
+}
+
+report() {
+    # Not to be confused with BACKHAULS_DIR
+    local BACKHAUL_DIRS="$(find $BACKHAULS_DIR -mindepth 1 -maxdepth 1 -type d)"
+    local FIRST=1
+    [ -n "$BACKHAUL_DIRS" -a -z "$JSON" ] && header
+    [ $JSON ] && echo $JSON_PREAMBLE
+    for BACKHAUL_DIR in $BACKHAUL_DIRS; do
+        local BH_STATFILE="$BACKHAUL_DIR/status"
+        if [ -f "$BH_STATFILE" ] && [ "$(jparse data.state $BH_STATFILE)" = "up" ]; then
+            if [ $FIRST ]; then
+                unset FIRST
+            else
+                [ $JSON ] && printf ", "
+            fi
+            report_item "$BACKHAUL_DIR"
+        fi
+    done | maybe_sort
+    [ $JSON ] && echo $JSON_POSTSCRIPT
+}
+
+if [ $LOOP ]; then
+    echo "(Reporting Backhaul status every $SLEEP_TIME seconds; ^C to stop)"
+    while true; do
+        echo "As of $(date):"
+        report
+        echo
+        sleep $SLEEP_TIME
+    done
+else
+    report
+fi

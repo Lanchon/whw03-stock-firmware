@@ -1,0 +1,139 @@
+#!/bin/sh
+#
+# smcdb_auth - CommandLine tool to provide easy authentication to the smartconnect database (server.sql) in Master node.
+#
+# Version 0.1.0
+#
+
+SMART_CONNECT_SERVER_DB="/var/config/smartconnect/server.sql"
+
+PROGNAME=$(basename $0)
+
+# List srp field value of authorize table with input is login or login and password
+# smcdb_auth -L <srplogin> [-P <srppassword>]
+#
+
+# Update srplogin and srppassword and salt, verifier
+# smcdb_auth -L <srplogin> -P <srppassword> -S <salt> -V <verifier> -M <mac>
+# smcdb_auth -L <srplogin> -P <srppassword> -S <salt> -V <verifier> -U <uuid>
+#
+usage() {
+    cat <<-EOF
+    smcdb_auth can be used for the following:
+     - Retrieve authentication information
+     - Update SRP login and SRP password in DB
+EOF
+    printf "Usage:\n"
+    printf "        %s {options}\n" $PROGNAME
+    echo "Where {options} are one or more of:"
+    printf "  -M {macaddr}      sub-option : macaddr\n"
+    printf "  -L {srplogin}     sub-option : login \n"
+    printf "  -P {srppassword}  sub-option : password\n"
+    printf "  -S {salt}         sub-option : salt\n"
+    printf "  -V {verifier}     sub-option : verifier\n"
+    printf "  -U {UUID}         sub-option : UUID\n"
+    printf "  -h:               This help\n"
+}
+
+
+while getopts ":hL:M:P:U:S:V:" opt;do
+    case $opt in
+        h) usage ; exit 0 ;;
+        L) ARG_LOGIN=$OPTARG ; shift "$((OPTIND-1))" ;;
+        M) ARG_MACADDR=$OPTARG ; shift "$((OPTIND-1))" ;;
+        P) ARG_PASSWD=$OPTARG ; shift "$((OPTIND-1))" ;;
+        U) ARG_UUID=$OPTARG ; shift "$((OPTIND-1))" ;;
+        S) ARG_SALT=$OPTARG ; shift "$((OPTIND-1))" ;;
+        V) ARG_VERIFIER=$OPTARG ; shift "$((OPTIND-1))" ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift "$((OPTIND-1))"
+
+#$1 : database name
+#$2 : SQL statement
+run_sql_db() {
+    DB="$1"
+    SQL="$2"
+    if [ -n "$DB" -a -n "$SQL" ]; then
+        RET=`sqlite3 "$DB" "$SQL"`
+        echo "$RET"
+    else
+        (exit 255)
+    fi
+}
+
+RETVAL=""
+SQL=""
+do_auth() {
+    if [ -n "$ARG_LOGIN" ] && [ -n "$ARG_PASSWD" ] && [ -n "$ARG_SALT" ] && [ -n "$ARG_VERIFIER" ] && [ -n "$ARG_MACADDR" ]; then
+        SQL="INSERT OR IGNORE INTO devices(mac) VALUES('$ARG_MACADDR');"
+        run_sql_db $SMART_CONNECT_SERVER_DB "$SQL"
+        SQL="SELECT COUNT(*) FROM authorize WHERE devices_id=(SELECT id FROM devices WHERE mac='$ARG_MACADDR');"
+        RETVAL=$(run_sql_db $SMART_CONNECT_SERVER_DB "$SQL")
+        if [ "$RETVAL" == "0" ]; then
+            SQL="INSERT INTO authorize(devices_id, srplogin, srppassword, salt, verifier) VALUES((SELECT id as devices_id FROM devices WHERE mac='$ARG_MACADDR'), '$ARG_LOGIN', '$ARG_PASSWD', '$ARG_SALT', '$ARG_VERIFIER');"
+        else
+            SQL="UPDATE authorize SET srplogin = '$ARG_LOGIN', srppassword = '$ARG_PASSWD', salt = '$ARG_SALT', verifier = '$ARG_VERIFIER' WHERE devices_id IN (SELECT id FROM devices WHERE mac='$ARG_MACADDR')"
+        fi
+        RETVAL="update_login_passwd"
+    elif [ -n "$ARG_LOGIN" ] && [ -n "$ARG_PASSWD" ] && [ -n "$ARG_UUID" ]; then
+        SQL="UPDATE authorize SET srplogin = '$ARG_LOGIN', srppassword = '$ARG_PASSWD'  WHERE devices_id IN (SELECT id FROM devices WHERE uuid='$ARG_UUID');"
+        RETVAL="update_login_passwd"
+    elif [ -n "$ARG_LOGIN" ] && [ -n "$ARG_PASSWD" ] && [ -n "$ARG_MACADDR" ]; then
+        SQL="UPDATE authorize SET srplogin = '$ARG_LOGIN', srppassword = '$ARG_PASSWD'  WHERE devices_id IN (SELECT id FROM devices WHERE mac='$ARG_MACADDR');"
+        RETVAL="update_login_passwd"
+    elif [ -n "$ARG_LOGIN" ] && [ -n "$ARG_PASSWD" ]; then
+        SQL="SELECT srplogin, srppassword, salt, verifier FROM authorize WHERE srplogin='$ARG_LOGIN' AND srppassword='$ARG_PASSWD';"
+        RETVAL="auth"
+    elif [ -n "$ARG_LOGIN" ]; then
+        SQL="SELECT srplogin, srppassword, salt, verifier FROM authorize WHERE srplogin='$ARG_LOGIN';"
+        RETVAL="auth"
+    fi
+
+}
+
+main_func() {
+    do_auth
+    case $RETVAL in
+        "auth")
+            LIST=$(run_sql_db $SMART_CONNECT_SERVER_DB "$SQL")
+            for ROW in $LIST; do
+                # Parsing data (sqlite3 returns a pipe separated string)
+                SRPLOGIN=`echo $ROW | awk '{split($0,a,"|"); print a[1]}'`
+                SRPPASSWORD=`echo $ROW | awk '{split($0,a,"|"); print a[2]}'`
+                SALT=`echo $ROW | awk '{split($0,a,"|"); print a[3]}'`
+                VERIFIER=`echo $ROW | awk '{split($0,a,"|"); print a[4]}'`
+
+                # Printing data
+                echo -e "$SRPLOGIN","$SRPPASSWORD","$SALT","$VERIFIER"
+            done
+        ;;
+
+        "update_login_passwd")
+            run_sql_db $SMART_CONNECT_SERVER_DB "$SQL"
+        ;;
+
+        "")
+            echo "Nothing to do"
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Error unknown operation \"$OP\"."
+            exit 1
+            ;;
+    esac
+}
+
+main_func
+

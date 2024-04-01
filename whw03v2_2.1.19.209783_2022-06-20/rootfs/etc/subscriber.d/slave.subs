@@ -1,0 +1,271 @@
+-- Subscriber Slave-node subscriptions file  -*- lua -*-
+-- Single-line comments use "--" prefix
+--[[ Multi-line comments
+   are delimited like this  --]]
+-- Entries can span lines.  Use whitespace & alignment to aid
+-- readability.
+
+{ -- Setup start
+   name  = "setup_start",
+   topic = "network/master/SC/status/START",
+   event = "wifi_smart_connect_setup-run"
+},
+
+{ -- Setup stop
+   name  = "setup_stop",
+   topic = "network/master/SC/status/STOP",
+   event = "wifi_smart_connect_setup-stop"
+},
+
+-- topic for the backhaul of slave
+{
+   name  = "BH_CONFIG",
+   topic = "network/%uuid/BH/config",
+   path  = "BH/%2/config",
+   event = "mqttsub::bhconfig",
+},
+
+{  -- This topic communicates backhaul (BH) status.
+   name = "BH",
+   topic = "network/+/BH/status",
+   event = "scan_table_update",
+   value  = "1"
+},
+
+-- Master tells us to proceed w/configuration
+{
+   name  = "CONFIG-ME",
+   topic = "network/%uuid/CONFIG-ME/cmd/proceed",
+   event = "mqttsub::configure_me-start",
+},
+
+-- do auto-channel selection
+{
+   name  = "AC_CONFIG",
+   topic = "network/%uuid/AC/config",
+   path  = "AC/%2/config",
+   event = "autochannel-start",
+},
+
+-- Firmware Update
+{
+   name  = "FWUPD_CMD",
+   topic = "network/master/FWUPD/cmd",
+   path  = "FWUPD/master/cmd",
+   event = "fwup_master_request",
+},
+
+{
+   name  = "FWUPD_CMD_1",
+   topic = "network/%uuid/FWUPD/cmd",
+   path  = "FWUPD/%2/cmd",
+   event = "fwup_master_request",
+},
+
+-- Store our parent IP address
+{
+   name  = "PARENT-IP",
+   topic = "BH/%uuid/status.parent_ip",
+   path  = "BH/%2/status.parent_ip",
+   event = "backhaul::parent_ip"
+},
+
+-- Set the sysevent that triggers measuring speed to another IP
+-- Note that as of 2018-08-08 this causes Slave to resend both
+-- backhaul status & performance data.  Additionally, status.parent_ip
+-- is regenerated.  Regarding status.parent_ip, payload is not JSON.
+-- Format: {IP}:{port #}.
+-- For example, "10.10.1.1:5003".
+{
+   name  = "SPEED_TEST",
+   topic = "network/%uuid/speed",
+   event = "backhaul::status_resend"
+},
+
+-- Generate and upload Sysinfo data
+{
+   name  = "UPLOAD_SYSINFO",
+   topic = "network/+/SYSINFO/cmd/upload",
+   event = "sysinfo::upload"
+},
+
+-- WPS related messages
+{
+   name  = "WPS_PIN_START",
+   topic = "master/WPS/cmd/pin-start",
+   event = "WPS::pin-start"
+},
+
+{
+   name  = "WPS_PIN_CANCEL",
+   topic = "master/WPS/cmd/pin-cancel",
+   event = "WPS::pin-cancel"
+},
+
+{
+   name  = "WPS_PIN_SUCCESS",
+   topic = "master/WPS/status/success",
+   event = "WPS::success"
+},
+
+{
+   name  = "WPS_PROCESS",
+   topic = "master/WPS/status/process",
+   event = "wps_process_remote"
+},
+
+-- For Slave LED status
+{
+   name  = "ICC_INTERNET_STATE",
+   topic = "master/network/status/icc",
+   event = "icc_internet_state"
+},
+
+-- Request subscribed nodes (re)send all subdevice data
+-- This is duplicated in master.subs
+{
+   name  = "WLAN_subdev_refresh",
+   topic = "network/+/WLAN/cmd/send-all-subdev",
+   event = "wlan::refresh-subdev",
+},
+{
+   name  = "NODES_STEERING_START",
+   topic = "network/master/cmd/nodes_steering_start",
+   path  = "STEERING/cmd/nodes_steering_start",
+   event = "wlan::nodes_steering_start",
+},
+
+{
+   name  = "NODES_TEMPORARY_BLACKLIST",
+   topic = "network/master/cmd/nodes_temporary_blacklist",
+   path  = "STEERING/cmd/nodes_temporary_blacklist",
+   event = "wlan::nodes_temporary_blacklist",
+},
+
+-- Direct Nodes to request neighbor list from attached client.
+-- Client is specified in message payload.
+-- Note: This is broadcast to all nodes but only the one actively
+-- connected to the specified client should take action.
+-- This is duplicated in master.subs
+{
+   name  = "WLAN_SEND_CLIENT_SURVEY",
+   topic = "network/master/WLAN/cmd/send-client-survey",
+   event = "wlan::send-client-survey",
+},
+{
+   name  = "SETUP_IP_CHANGED",
+   topic = "network/master/cmd/setup_ip_changed",
+   event = "smart_connect::setup_ip_changed",
+},
+
+-- Request for Slave client-steering FSM report
+{
+   name  = "TESSERACT_CLIENT_STEER_FSM_REPORT",
+   topic = "network/client-steer/fsm-report",
+   event = "tesseract::client-steer-fsm-report",
+},
+
+-- Suggest Slave reconsider its' backhaul connection
+{
+   name  = "RECONSIDER-BACKHAUL",
+   topic = "network/%uuid/WLAN/cmd/reconsider-backhaul",
+   event = "wlan::reconsider-backhaul",
+   path  = "BH/%2/reconsider",
+},
+
+-- Unlock scan table updates.  This allows an update sooner than
+-- normal (every 30 minutes)
+{
+   name  = "REPORT-NEIGHBORS",
+   topic = "network/cmd/report-neighbors",
+   event = "wlan::report-neighbors",
+},
+
+
+-- Are you up?  Master may send this when offline last-will is
+-- delivered to guard against spurious wills.
+{
+   name  = "ARE-YOU-UP",
+   topic = "network/%uuid/cmd/are-you-up",
+   event = "cmd::are-you-up",
+},
+
+-- Topic to restart motion sensing on slaves
+{
+   name  = "MOTION_SLAVE_RESTART",
+   topic = "motion/slave_restart",
+   event = "motion::slave_restart",
+},
+
+-- Topic to start bot scanning on slave
+{
+   name  = "MOTION_SLAVE_START_BOT_SCAN",
+   topic = "motion/slave_start_bot_scan",
+   path  = "MOTION/bot_scan_list",
+   event = "motion::slave_start_bot_scan",
+},
+
+-- topic for all slaves to resend bh status ( solves subscriber race condition )
+{
+   name  = "BH_STATUS_RESEND_ALL",
+   topic = "network/BH/status_resend_all",
+   event = "backhaul::status_resend_all",
+},
+
+-- This topic communicates serving channels
+{  
+    name = "REFRESH_SERVING_CHANNELS",
+    topic = "network/+/WLAN/cmd/refresh_serving_channels",
+    event = "wlan::refresh_serving_channels",
+},
+
+{  
+    name = "SERVING_CHANNELS",
+    topic = "network/+/WLAN/serving_channels",
+    path = "WLAN/%2/serving_channels"
+},
+
+{  
+   name = "MESH_USB_EJECT",
+   topic = "network/%uuid/MESHUSB/eject/+",
+   path  = "MESHUSB/eject/%5",
+   event = "mesh_usb::eject_usb",
+},
+
+{  
+   name = "MESH_USB_REFRESH",
+   topic = "network/%uuid/MESHUSB/refresh",
+   event = "mesh_usb::refresh_data",
+},
+
+
+-- Topology Management Temporary Blacklist
+{
+   name  = "TOPOMGMT_TEMPORARY_BLACKLIST",
+   topic = "topomgmt/cmd/temporary_blacklist",
+   path  = "TOPOMGMT/cmd/temporary_blacklist",
+   event = "topology_management::temporary_blacklist",
+},
+
+-- Topology Management Steer 11v
+{
+   name  = "TOPOMGMT_STEER_11V",
+   topic = "topomgmt/cmd/steer_11v",
+   path  = "TOPOMGMT/cmd/steer_11v",
+   event = "topology_management::steer_11v",
+},
+
+-- topic for slaves to update their database
+{
+   name  = "LRHK_DATABASE_UPDATE",
+   topic = "lrhk/database_update",
+   event = "lrhk::database_update",
+},
+
+-- topic to notify all slaves to initiate lrhk::kickmac )
+{
+   name  = "LRHK_KICKMAC",
+   topic = "network/LRHK/kickmac",
+   event = "lrhk::kickmac",
+},
+

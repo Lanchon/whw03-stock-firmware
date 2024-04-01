@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish wireless config from the master to the slave
+# usage slave_uuid band channel bssid
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+
+UUID=$1
+BAND=$2
+CHANNEL=$3
+BSSID="`echo $4|tr [:upper:] [:lower:]`"
+if [ -z $UUID ] ||  [ -z $BAND ] ;then
+    echo "pub_bh_config: missing input $1 $2 $3"
+    exit
+fi
+
+if [ -z $BSSID ] || [ -z $CHANNEL ] ;then
+    if [ -z $BSSID ] && [ -z $CHANNEL ];then
+        echo "pub_bh_config: BSSID Channel not set,Slave need to do scan"
+    else
+        echo "pub_bh_config: BSSID Channel must be set at the same time"
+        exit
+    fi
+fi
+
+validate UUID
+
+PUB_TOPIC="network/${UUID}/BH/config"
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   STATUS   : $STATUS"
+fi
+
+echo "pub_bh_config: publish bh config to the slave with $1 $2 $3 $4"
+
+mk_infra_payload \
+    -t set \
+    -u "$UUID" \
+    -s "band:${BAND}" \
+    -s "bssid:${BSSID}" \
+    -s "channel:${CHANNEL}" | \
+    publish "$PUB_TOPIC"

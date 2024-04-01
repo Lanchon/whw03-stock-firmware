@@ -1,0 +1,302 @@
+<link type="text/css" rel="stylesheet" href="/ui/1.0.99.209783/static/cache/applets/media_prioritization/css/media-prioritization.css" />
+<article id="media-pri-applet">
+    <div id="media-pri-applet-templates" class="templates" style="display: none">
+        <ul id="device-templates">
+            <li class="device" name="{value}"><span class="device-icon {icon}"></span><h3>{description}</h3><span class="handle"></span></li>
+        </ul>
+        <select class="option-templates">
+            <option class="add-new-app" value="AddNew">{{dynamic-applets-media_prioritization.c21f3af2}}</option>
+            <option class="add-new-game" value="AddNew">{{dynamic-applets-media_prioritization.a738dbf5}}</option>
+            <option class="select-app" value="none">{{dynamic-applets-media_prioritization.592ba20d}}</option>
+            <option class="select-game" value="none">{{dynamic-applets-media_prioritization.2769cc89}}</option>
+            <option class="empty" value="{value}">{description}</option>
+        </select>
+        <table>
+            <tbody id="application-template">
+                <tr name="each:portRanges">
+                    <td class="pad-left-med">
+                        <input class="small" type="text" name="firstPort" maxlength="5" />
+                        {{dynamic-applets-media_prioritization.b32c2c09}}
+                        <input class="small" type="text" name="lastPort" maxlength="5" />
+                    </td>
+                    <td class="pad-left-med">
+                        <select name="protocol">
+                            <option value="Both">{{dynamic-applets-media_prioritization.30c9cb12}}</option>
+                            <option value="TCP">{{dynamic-applets-media_prioritization.c3c59f75}}</option>
+                            <option value="UDP">{{dynamic-applets-media_prioritization.8d41b840}}</option>
+                        </select>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+    <header>
+        <h1 class="showForAll showForVideoCalls">{{dynamic-applets-media_prioritization.6e30563b}}</h1>
+        <h1 class="showForGamingPrioritization" style="display: none;">{{dynamic-applets-media_prioritization.e64d9c19}}</h1>
+
+        <h4 class="showForAll">{{dynamic-applets-media_prioritization.a1344c33}}</h4>
+        <h4 class="showForGamingPrioritization" style="display: none;">{{dynamic-applets-media_prioritization.0b972904}}</h4>
+        <h4 class="showForVideoCalls" style="display: none;">{{dynamic-applets-media_prioritization.6d22e3cb}}</h4>
+
+        <div class="close-button"></div>
+        <div class="widget-config">
+           <input type="checkbox" id="showWidget" checked=checked /><label for="showWidget">{{dynamic-applets-media_prioritization.96d3c7d5}}</label>
+        </div>
+    </header>
+    <section class="tab-section">
+        <ul class="tabs">
+            <li data-id="videoCalls"><span>{{dynamic-applets-media_prioritization.9bc0d0bf}}</span></li>
+            <li data-id="byDevice"><span>{{dynamic-applets-media_prioritization.51d572d4}}</span></li>
+            <div class="tab-filler"></div>
+        </ul>
+        <div class="tab-content sub-tab-section form" id="videoCalls">
+            <div class="single-line">
+                <h2 class="legend"><label class="left" for="isEnabled">{{dynamic-applets-media_prioritization.af661510}}</label></h2>
+                <input type="checkbox" id="isEnabled" name="LVVPSettings.isEnabled" class="switch"/>
+            </div>
+            <p>{{dynamic-applets-media_prioritization.df722fb6}}</p>
+        </div>
+        <div class="tab-content sub-tab-section form small-icon" id="byDevice">
+            <div class="single-line">
+                <h2 class="legend"><label class="left" for="isQoSEnabled">{{dynamic-applets-media_prioritization.af661510}}</label></h2>
+                <input type="checkbox" id="isQoSEnabled" name="QoSSettings.isQoSEnabled"  checked=checked class="switch"/>
+            </div>
+            <div class="priTools clear-both">
+                <div id="speed-result" class="single-line left embedded-speedtest-supported">
+                    <p class="calculating">{{dynamic-applets-media_prioritization.ddd3472e}}</p>
+                    <p class="speed-test-complete"></p>
+                </div>
+                <div class="right single-line">
+                    <span><a id="reset-media-pri">
+                        <span class="showForAll">{{dynamic-applets-media_prioritization.10af10c4}}</span>
+                        <span class="showForVideoCalls">{{dynamic-applets-media_prioritization.b0c675ac}}</span>
+                        <span class="showForGamingPrioritization">{{dynamic-applets-media_prioritization.5ba96930}}</span>
+                    </a></span>
+                    <span id="media-pri-settings-separator">|</span>
+                    <span><a id="edit-media-pri-settings">{{dynamic-applets-media_prioritization.858d60c2}}</a></span>
+                </div>
+            </div>
+
+            <div id="warningWrapper" class="clear-both hidden">
+                <p class="warningMsg">{{dynamic-applets-media_prioritization.197d4c65}}</p>
+            </div>
+            <div class="bucket" id="high-priority-group">
+                <h2>{{dynamic-applets-media_prioritization.fad0112a}}</h2>
+                <ul class="list ui-sortable droptrue"></ul>
+            </div>
+            <div id="drag-n-drop-arrows"><div>{{dynamic-applets-media_prioritization.26239fcc}}</div></div>
+            <fieldset class="bucket" id="normal-priority-group">
+                <h2>{{dynamic-applets-media_prioritization.210640aa}}</h2>
+                <div id="column-left" class="left clear-both">
+                    <legend id="device-header" class="showForLinksysRouters">{{dynamic-applets-media_prioritization.f577d853}}</legend>
+                    <ul class="list rounded ui-sortable droptrue" id="normal-priority-devices"></ul>
+                </div>
+                <div id="column-right" class="right showForLinksysRouters">
+                    <div id="app-header">
+                        <legend>{{dynamic-applets-media_prioritization.22396aa1}}</legend><span><a class="edit">{{dynamic-applets-media_prioritization.4a370bdd}}</a></span><span>|</span><span><a class="delete">{{dynamic-applets-media_prioritization.3618bd6a}}</a></span>
+                    </div>
+                    <div id="app-devices-container">
+                        <ul id="app-devices" class="list ui-sortable droptrue rounded"></ul>
+                        <select></select>
+                    </div>
+                    <div id="game-header" class="margin-top-lrg">
+                        <legend>{{dynamic-applets-media_prioritization.72da42b3}}</legend><span><a class="edit">{{dynamic-applets-media_prioritization.4a370bdd}}</a></span><span>|</span><span><a class="delete">{{dynamic-applets-media_prioritization.3618bd6a}}</a></span>
+                    </div>
+                    <div id="game-devices-container">
+                        <ul id="game-devices" class="list ui-sortable droptrue rounded"></ul>
+                        <select></select>
+                    </div>
+                </div>
+            </fieldset>
+        </div>
+    </section>
+    <footer class="applet-button-section">
+        <button class="cancel">{{dynamic-applets-media_prioritization.8f475444}}</button>
+        <button class="submit">{{dynamic-applets-media_prioritization.e9b662b3}}</button>
+    </footer>
+    <div class="dialog-container" style="display: none;">
+        <div id="custom-application-dialog">
+            <div class="dialog-header">
+                <h1 class="add-app">{{dynamic-applets-media_prioritization.c389fd38}}</h1>
+                <h1 class="edit-app">{{dynamic-applets-media_prioritization.8dd4cfde}}</h1>
+                <h1 class="add-game">{{dynamic-applets-media_prioritization.a96372ef}}</h1>
+                <h1 class="edit-game">{{dynamic-applets-media_prioritization.5232302b}}</h1>
+                <div class="close-button"></div>
+            </div>
+            <div class="dialog-content form">
+                <fieldset>
+                    <legend class="app">{{dynamic-applets-media_prioritization.005e3c2b}}</legend>
+                    <legend class="game">{{dynamic-applets-media_prioritization.49b02fdd}}</legend>
+                    <span class="cell">
+                        <ul>
+                            <li>
+                                <input type="text" name="description" id="application-name" placeholder="{{dynamic-applets-media_prioritization.6e776843}}" />
+                            </li>
+                        </ul>
+                    </span>
+                </fieldset>
+                <fieldset>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th><legend>{{dynamic-applets-media_prioritization.c98958e8}}</legend></th>
+                                <th class="pad-left-sml"><legend>{{dynamic-applets-media_prioritization.27a6815d}}</legend></th>
+                            </tr>
+                        </thead>
+                        <tbody id="portRanges-list">
+                        </tbody>
+                    </table>
+                </fieldset>
+            </div>
+            <div class="dialog-buttons">
+                <button class="cancel">{{dynamic-applets-media_prioritization.8f475444}}</button>
+                <button class="submit">{{dynamic-applets-media_prioritization.e9b662b3}}</button>
+            </div>
+        </div>
+        <div id="settings-dialog" class="inline-edit">
+            <div class="dialog-header">
+                <h1>{{dynamic-applets-media_prioritization.858d60c2}}</h1>
+                <div class="close-button"></div>
+            </div>
+            <div class="dialog-content form">
+                <fieldset id="settings-download-bandwidth" class="showForLinksysRouters">
+                    <legend>{{dynamic-applets-media_prioritization.bb66528d}}</legend>
+                    <span class="block-row">
+                        <input type="text" class="medium margin-left-sml" name="QoSSettings.downstreamBandwidth" value="0"/>
+                        <label>{{dynamic-applets-media_prioritization.f23af7e1}}</label>
+                        <label style="display: none;" name="QoSSettings.downstreamBandwidthbps">0</label>
+                    </span>
+                </fieldset>
+                <fieldset>
+                    <legend>{{dynamic-applets-media_prioritization.74f0ca39}}</legend>
+                    <div class="row">
+                        <label class="switch">{{dynamic-applets-media_prioritization.dc2a4068}}</label>
+                        <div class="cell">
+                            <input name="WLANQoSSettings.isWMMEnabled" type="checkbox" class="switch" />
+                        </div>
+                    </div>
+                    <div class="row">
+                        <label class="switch-l">{{dynamic-applets-media_prioritization.93eaad9f}}</label>
+                        <div class="cell">
+                            <input name="WLANQoSSettings.isWirelessAcknowledgementDisabled" type="checkbox" class="switch" />
+                        </div>
+                    </div>
+                </fieldset>
+           </div>
+            <div class="dialog-buttons">
+                <button class="cancel">{{dynamic-applets-media_prioritization.8f475444}}</button>
+                <button class="submit">{{dynamic-applets-media_prioritization.e9b662b3}}</button>
+           </div>
+        </div>
+        <div id="bandwidth-dialog" class="inline-edit">
+            <div class="dialog-header">
+                <h1>{{dynamic-applets-media_prioritization.4d680e6f}}</h1>
+                <div class="close-button"></div>
+            </div>
+            <div class="dialog-content form">
+                <section id="speed-test-content">
+                    <p>{{dynamic-applets-media_prioritization.61885858}}</p>
+                    <table class="margin-top-med margin-bottom-med">
+                        <tbody>
+                            <tr>
+                                <td rowspan="2">
+                                    <img src="/ui/1.0.99.209783/static/cache/images/spinner/Spinner_55.gif" />
+                                    <label name="QoSSettings.downstreamBandwidth"></label>
+                                </td>
+                                <td rowspan="2" class="downloadSpeedArrow"></td>
+                                <td class="pad-right-med">{{dynamic-applets-media_prioritization.eba16a96}}</td>
+                                <td rowspan="2" class="pad-left-med divider">
+                                    <img src="/ui/1.0.99.209783/static/cache/images/spinner/Spinner_55.gif" />
+                                    <label name="QoSSettings.upstreamBandwidth"></label>
+                                </td>
+                                <td rowspan="2" class="uploadSpeedArrow"></td>
+                                <td>{{dynamic-applets-media_prioritization.eba16a96}}</td>
+                            </tr>
+                            <tr>
+                                <td class="pad-right-med">{{dynamic-applets-media_prioritization.eeaac18e}}</td>
+                                <td>{{dynamic-applets-media_prioritization.a70bc3c4}}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <button id="run-speed-test">{{dynamic-applets-media_prioritization.48c3da9f}}</button>
+                    <p class="margin-top-lrg">{{dynamic-applets-media_prioritization.54a1cdfc}}</p>
+                    <p id="manual-speed" class="margin-top-med">{{dynamic-applets-media_prioritization.1bbc7bf0}}</p>
+                </section>
+                <section id="manual-speed-content">
+                    <p>{{dynamic-applets-media_prioritization.f7711415}}</p>
+                    <table class="margin-top-med margin-bottom-med">
+                        <tbody>
+                            <tr>
+                                <td rowspan="2"><input type="text" name="QoSSettings.downstreamBandwidth" valu="0"></td>
+                                <td rowspan="2" class="downloadSpeedArrow"></td>
+                                <td class="pad-right-med">{{dynamic-applets-media_prioritization.eba16a96}}</td>
+                                <td rowspan="2" class="pad-left-med divider"><input type="text" name="QoSSettings.upstreamBandwidth" value="0"></td>
+                                <td rowspan="2" class="uploadSpeedArrow"></td>
+                                <td>{{dynamic-applets-media_prioritization.eba16a96}}</td>
+                            </tr>
+                            <tr>
+                                <td class="pad-right-med">{{dynamic-applets-media_prioritization.eeaac18e}}</td>
+                                <td>{{dynamic-applets-media_prioritization.a70bc3c4}}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p id="speed-test" class="margin-top-lrg">{{dynamic-applets-media_prioritization.4b035d15}}</p>
+                </section>
+           </div>
+            <div class="dialog-buttons">
+                <button class="cancel">{{dynamic-applets-media_prioritization.8f475444}}</button>
+                <button class="submit">{{dynamic-applets-media_prioritization.e9b662b3}}</button>
+           </div>
+        </div>
+        <div id="confirm-reset-dialog" class="dialog" style="display: none;">
+            <div class="dialog-content">
+                <h1 class="showForAll">{{dynamic-applets-media_prioritization.3bb095a5}}</h1>
+                <h1 class="showForGamingPrioritization" style="display: none;">{{dynamic-applets-media_prioritization.4679b9e7}}</h1>
+                <h1 class="showForVideoCalls" style="display: none;">{{dynamic-applets-media_prioritization.c29f3162}}</h1>
+                <span>{{dynamic-applets-media_prioritization.60d16906}}</span>
+            </div>
+            <div class="dialog-buttons">
+                <button class="cancel">{{dynamic-applets-media_prioritization.8f475444}}</button>
+                <button class="submit">{{dynamic-applets-media_prioritization.e9b662b3}}</button>
+            </div>
+        </div>
+        <div id="confirm-delete-dialog" class="dialog" style="display: none;">
+            <div class="dialog-content">
+                <h1 class="del-app">{{dynamic-applets-media_prioritization.6a9b245e}}</h1>
+                <h1 class="del-game">{{dynamic-applets-media_prioritization.3f51522f}}</h1>
+                <div id="message"></div>
+            </div>
+            <div class="dialog-buttons">
+                <button class="cancel">{{dynamic-applets-media_prioritization.8f475444}}</button>
+                <button class="submit">{{dynamic-applets-media_prioritization.e9b662b3}}</button>
+            </div>
+        </div>
+        <div id="confirm-disable-video-calls" class="dialog" style="display: none;">
+            <div class="dialog-content">
+                <span>{{dynamic-applets-media_prioritization.25898dc7}}</span>
+            </div>
+            <div class="dialog-buttons">
+                <button class="cancel">{{dynamic-applets-media_prioritization.b9ef9a13}}</button>
+                <button class="submit">{{dynamic-applets-media_prioritization.c397d39e}}</button>
+            </div>
+        </div>
+        <div id="confirm-disable-priority-by-device" class="dialog" style="display: none;">
+            <div class="dialog-content">
+                <span>{{dynamic-applets-media_prioritization.491f7187}}</span>
+            </div>
+            <div class="dialog-buttons">
+                <button class="cancel">{{dynamic-applets-media_prioritization.b9ef9a13}}</button>
+                <button class="submit">{{dynamic-applets-media_prioritization.c397d39e}}</button>
+            </div>
+        </div>
+    </div>
+</article>
+
+<script type="text/javascript">
+    RAINIER.util.injectScripts([
+        '/ui/1.0.99.209783/static/cache/js/lib/jquery.ui.touch-punch.js',
+        '/ui/1.0.99.209783/static/cache/js/third_party/ookla.js',
+        '/ui/1.0.99.209783/static/cache/applets/media_prioritization/js/media-prioritization-common.js',
+        '/ui/1.0.99.209783/static/cache/applets/media_prioritization/js/media-prioritization.js'
+    ]);
+</script>

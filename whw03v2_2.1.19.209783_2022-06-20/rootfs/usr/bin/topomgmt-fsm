@@ -1,0 +1,127 @@
+#!/bin/sh
+#------------------------------------------------------------------
+#  2020 Linksys and/or its affiliates. All rights reserved.
+#------------------------------------------------------------------
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/service_misc_functions.sh
+source /etc/init.d/topology_management_common.sh
+source /etc/init.d/service_wifi/wifi_steer_util.sh
+
+BNAME=$( basename $0 )
+
+[ "$(syscfg get "${NAMESPACE}::debug")" = "1" ] && DEBUG=1
+
+# Remove all files in given list.
+# $*: Files to remove
+remove_files()
+{
+    for FPATH in $*; do
+        DBG conslog "Removing $FPATH"
+        rm -f $FPATH
+    done
+}
+
+# Convert the time in seconds to minutes.
+# $1: The time in seconds.
+convert_seconds_to_minutes()
+{
+    local SECONDS=$1
+    dc $1 60 / p
+}
+
+# Translate lowercase to uppercase.
+to_upper()
+{
+    # tr command reads input from std:in
+    tr '[a-z]' '[A-Z]'
+}
+
+process_blacklists()
+{
+    DBG conslog "process_blacklists"
+    DBG conslog "Blacklist client: $( ls -lt $TOPOLOGY_MANAGEMENT_BLACKLIST_DIR )"
+
+    local ALL_CLIENT_FILES=$( find $TOPOLOGY_MANAGEMENT_BLACKLIST_DIR -type f )
+    
+    [ -z "$ALL_CLIENT_FILES" ] && return 1
+
+    local CLIENT_FILE
+    local client
+    local duration
+    local start_time
+    local expire_time
+
+    for CLIENT_FILE in $ALL_CLIENT_FILES; do
+        client="$(jsonparse -f $CLIENT_FILE data.client)"
+        duration="$(jsonparse -f $CLIENT_FILE data.duration)"
+        
+        if [ -z "$duration" ]; then
+            DBG conslog "duration element is missing, remove the blacklist"
+            remove_client_from_blacklist_unit "$client"
+            remove_files $CLIENT_FILE
+            continue
+        fi
+        
+        start_time=$( stat -c %X "$CLIENT_FILE" )
+        expire_time=$( expr "$start_time" + "$duration" )
+
+        if [ "$(date +%s)" -lt "$expire_time" ]; then
+            DBG conslog "blacklist for $client has not expired"
+            continue
+        fi
+        
+        DBG conslog "blacklist for $client has expired, remove from blacklists"
+        remove_client_from_blacklist_unit "$client"
+        remove_files $CLIENT_FILE
+    done
+    
+    return 0
+}
+
+# If firmware update is running, do not update.
+# Return Status Code 0=running, 1=idle.
+is_firmware_update_running()
+{
+    local FWUP_STATE="$( sysevent get fwup_state )"
+    local STATUS
+    
+    if [ -z "$FWUP_STATE" -o "$FWUP_STATE" = "0" ]; then
+        STATUS=1
+    else
+        STATUS=0
+    fi
+    
+    return $STATUS
+}
+
+# Exit script with status code ( 1 ).
+# $1: String Message
+die()
+{
+    local MSG=$1
+    echo "${BNAME}|$(date -u +'%F %T'): ${MSG}"
+    exit 1
+}
+
+# Check states and update.
+fsm_tick()
+{
+    process_blacklists
+}
+
+########################################################################
+#                        File Lock
+(
+    if is_firmware_update_running; then
+        DBG conslog "${BNAME}: firmware update in progress, skip topomgmt-fsm."
+    else
+        # If we can't immediate aquire the lock file, then die.
+        flock -n 200 || die "Skipping topomgmt-fsm ( it is already running )"
+        
+        # Obtained lock, issue state machine check.
+        fsm_tick
+    fi
+) 200>$TOPOLOGY_MANAGEMENT_LOCK_FILE
+#
+########################################################################

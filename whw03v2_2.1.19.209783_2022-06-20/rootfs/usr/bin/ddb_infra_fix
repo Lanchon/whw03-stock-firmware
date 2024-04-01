@@ -1,0 +1,121 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+--
+-- Copyright (c) 2016, Belkin Inc. All rights reserved.
+--
+--! @file
+
+-- Keep prog_name global for use in error messages
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+cli   = require "cliargs"
+nutil = require 'nodes.util'
+ddb = require('libdevdblua').db()
+ddb_util = require'nodes.util.devdb'
+
+-- Keep opts global for access by external modules
+opts  = { prog_name = prog_name }
+
+local errout = nutil.errout
+local debout = nutil.debout
+local verbout = nutil.verbout
+
+function parse_args()
+   -- Set up command line options
+   cli:set_name( prog_name                                                             )
+   cli:set_description( 'Fix infrastructure errors in DDB'                             )
+   cli:flag(   "-a,--all",       "Fix all devices",                              false )
+   cli:flag(   "-d,--debug",     "Show debugging output",                        false )
+   cli:option( "-i,--id=uuid",   "ID of device to fix"                                 )
+   cli:flag(   "-n,--dry-run",   "Don't change DB; just say what would be done", false )
+   cli:flag(   "-v,--verbose",   "Be verbose",                                   false )
+   cli:flag(   "-h,--help",      "This help"                                           )
+
+   local args, err = cli:parse()
+
+   if not args and err then
+      errout( err )
+      os.exit( 0 )
+   else
+      local opts = {
+         all     = args.all,
+         debug   = args.debug,
+         id      = args.id,
+         verbose = args.verbose,
+         dry_run = args["dry-run"],
+         uuid    = args.UUID,
+         mode    = args.mode
+      }
+      -- If debug is set, output the options
+      if opts.debug then
+         errout( "%s options: ", cli.name )
+         for k,v in pairs( opts ) do
+            errout( "%12s: (%s)", k, tostring( v ))
+         end
+      end
+      if not opts.all and not opts.id then
+         errout( '%s Error: Either "--all" or "--id={UUID}" required', prog_name )
+         cli:print_help()
+         os.exit( 1 )
+      end
+      return opts
+   end
+end
+
+function infra_demote_device( uuid )
+   if not uuid then error( "infra_demote_device called with nil UUID" ) end
+   if opts.dry_run then
+      debout( "Would demote '%s'", uuid )
+   else
+      verbout( "Demoting device '%s'", uuid )
+      if ddb:writeLock() then
+         ddb:setInfrastructure( uuid, 0, "" )
+         ddb:writeUnlockCommit()
+      else
+         error "Unable to write-lock deviceDB"
+      end
+   end
+   return true
+end
+
+function _main()
+   opts = parse_args()
+   local dev, devs
+   if opts.dry_run then verbout( "Dry Run" ) end
+   if opts.all then
+      if ddb:readLock() then
+         devs = ddb:getAllDevices()
+         ddb:readUnlock()
+         if devs then
+            debout( "Got %d devices", #devs )
+            for i,dev in ipairs( devs ) do
+               if ddb_util.is_node( dev ) then
+                  verbout( "Skipping Node '%s'", dev.deviceId )
+               else
+                  infra_demote_device( dev.deviceId )
+               end
+            end
+         else
+            error "Could not get list of devices from DeviceDB"
+         end
+      else
+         error "Couldn't acquire DeviceDB read-lock"
+      end
+   else
+      infra_demote_device( opts.id )
+   end
+end
+
+local ok, err = pcall( _main )
+if ok then
+   verbout "Done"
+   os.exit( 0 )
+else
+   errout( "%s error: '%s'", prog_name, tostring( err ))
+   if ddb then
+      debout "Unlocking DeviceDB after error"
+      pcall( ddb.writeUnlockRollback, ddb )
+      pcall( ddb.readUnlock, ddb )
+   end
+   os.exit( 1 )
+end

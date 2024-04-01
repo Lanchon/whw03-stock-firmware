@@ -1,0 +1,26 @@
+#!/usr/bin/lua
+
+WM=require'nodes.wifi_math'
+
+ok, status = pcall( function()
+   if #arg < 1 then
+      error "Need value"
+   end
+
+   local prog_name = string.match( arg[0], ".*/(.*)" )
+   local action
+   if prog_name == "rssi_to_rcpi" or
+      prog_name == "rcpi_to_rssi" then
+      action = prog_name
+   else
+      error( "Unknown operation: '"..prog_name.."'" )
+   end
+   print( WM[action]( tonumber( arg[1] )))
+   return 0
+end)
+
+if not ok then
+   io.stderr:write( tostring( status ).."\n")
+   status = 1
+end
+os.exit( status )

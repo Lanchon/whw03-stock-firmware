@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish "link_status" mesages to Master.
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+if [ "$#" -lt 1 ]; then
+    cat <<EOF
+Error: missing argument
+Usage: $(basename $0) link-state
+EOF
+fi
+
+LINK_STATE="$1"
+validate LINK_STATE
+
+UUID="$(syscfg get device::uuid)"
+validate UUID
+
+PUB_TOPIC="$(omsg-conf -m link_status | sed "s/+/$UUID/" )"
+validate PUB_TOPIC
+
+echo "$LINK_STATE" | publish "$PUB_TOPIC"

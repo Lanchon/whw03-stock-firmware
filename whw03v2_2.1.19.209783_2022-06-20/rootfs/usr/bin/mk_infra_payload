@@ -1,0 +1,45 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+-- mkpayload - Generate JSON MQTT payload from command line arguments
+--
+-- Copyright (c) 2016, Belkin Inc. All rights reserved.
+--
+local cli = require "cliargs"
+local JSPayload = require "json_payload"
+local Args = require "json_payload.args"
+
+local debug_default = false
+
+local type_status = "status"
+local type_cmd = "cmd"
+local type_default = type_status
+
+
+local function _main()
+   local args = Args:new()
+   local ISO_8601_COMBO_FMT = "!%FT%TZ"
+   -- Add some custom command line options
+   args.cli:option( "-t,--type=TYPE", "Set type (cmd,status)", type_default )
+   args.cli:option( "-u,--uuid=UUID", "Set UUID in header"                  )
+
+   local opts = args:parse()
+   opts.type = opts.args.type
+   local json = JSPayload:new()
+   if opts.uuid then json:add_pair( "uuid", opts.uuid ) end
+   json
+      :add_pair( "type", '"' .. opts.type .. '"' )
+      :add_pair( "TS",   '"' .. os.date( ISO_8601_COMBO_FMT ) .. '"' )
+      :add_pair( "data",
+                 JSPayload
+                    :new()
+                    :add_list( opts.raw_entities ))
+   print( json )
+end
+
+local ok,status = pcall( _main )
+
+if not ok then
+   io.stderr:write( string.format( "Error: %s\n", tostring( status )))
+   cli.print_help()
+   os.exit( 1 )
+end

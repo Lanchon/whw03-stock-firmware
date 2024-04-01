@@ -1,0 +1,106 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish some backhaul status data to a MQTT topic
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PUB_TOPIC="$(omsg-conf -m DEVINFO | sed "s/+/$TOPIC_UUID/")"
+validate PUB_TOPIC
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   STATUS   : $STATUS"
+fi
+
+if [ "$MODE" = "2" ];then
+    MODE="master"
+elif [ "$MODE" = "1" ];then
+    MODE="slave"
+else
+    MODE="unconfigured"
+fi
+
+IP="$(ifconfig br0 | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}')"
+validate IP
+
+PHY_INTF="`sysevent get backhaul::intf`"
+Ap5GL_channel=`iwlist ath1 channel 2>/dev/null | egrep "Current Frequency.*\(Channel" | sed 's/(Channel /&\n/' | sed 's/)//' | awk NR==2`
+Ap5GH_channel=`iwlist ath10 channel 2>/dev/null | egrep "Current Frequency.*\(Channel" | sed 's/(Channel /&\n/' | sed 's/)//' | awk NR==2`
+
+# If NOT a Jr, exclude the backhaul interface channel.
+if [ "$(syscfg get device::model_base)" != "WHW01" ]; then
+    if [ "$PHY_INTF" = "ath9" ] ;then
+        Ap5GL_channel=""
+    elif [ "$PHY_INTF" = "ath11" ] ; then
+        Ap5GH_channel=""
+    fi
+fi
+
+# Note: num_macs is deprecated.  Some prior firmware versions produced
+# wildly incorrect values for num_macs.  It is replaced by num_macs2.
+# num_macs is produced for backawards compatability with older master
+# images.
+
+# Get the system value for num_macs...but if it's not set use a default of 6
+NUM_MACS="$(syscfg get device::num_macs)"
+NUM_MACS=${NUM_MACS:-6}
+
+# These are additional (sometimes virtual) MACs that the system
+# synthesizes.  Since we can sometimes connect via these MACs they
+# need to be registered with Master to avoid creating phantom device
+# entries in DeviceDB.
+EXTRA_MACS="$(harvest_secondary_macs -j --mac="$(syscfg get device::mac_addr)")"
+[ -z "$EXTRA_MACS" ] && EXTRA_MACS='[]'
+
+# If syscfg variable thrulay::test_duration is set (and it should be) use
+# that below for bh_perf_test_time.  If not, pick some reasonable
+# default
+THRULAY_TEST_TIME="$(syscfg get thrulay::test_duration)"
+THRULAY_TEST_TIME=${THRULAY_TEST_TIME:-3}
+
+mk_infra_payload \
+    -t status \
+    -u "$UUID" \
+    -s "SKU:$(skuapi -g model_sku | awk '{print $3}')" \
+    -s "serialNumber:$(syscfg get device::serial_number)" \
+    -s "fw_ver:$(syscfg get fwup_firmware_version)" \
+    -s "mode:$MODE" \
+    -s "ip:$IP" \
+    -s "HKSupport:1" \
+    -s "userAp2G_bssid:`ifconfig ath0 2>/dev/null | grep HWaddr | awk '{print $5}'`" \
+    -s "userAp2G_channel:`iwlist ath0 channel 2>/dev/null | egrep "Current Frequency.*\(Channel" | sed 's/(Channel /&\n/' | sed 's/)//' | awk NR==2`" \
+    -s "guestAp2G_bssid:`ifconfig ath2 2>/dev/null | grep HWaddr | awk '{print $5}'`" \
+    -s "userAp5GL_bssid:`ifconfig ath1 2>/dev/null | grep HWaddr | awk '{print $5}'`" \
+    -s "userAp5GL_channel:$Ap5GL_channel" \
+    -s "userAp5GH_bssid:`ifconfig ath10 2>/dev/null | grep HWaddr | awk '{print $5}'`" \
+    -s "userAp5GH_channel:$Ap5GH_channel" \
+    -s "guestAp5G_bssid:`ifconfig ath3 2>/dev/null | grep HWaddr | awk '{print $5}'`" \
+    -s "mac:$(syscfg get device::mac_addr)" \
+    -s "bt_mac:$(syscfg get bt_mac_addr)" \
+    -s "base_mac:$(syscfg get device::mac_addr)" \
+    -r "infrastructure:true" \
+    -r "num_macs:${NUM_MACS}" \
+    -r "num_macs2:${NUM_MACS}" \
+    -r "extra_macs:${EXTRA_MACS}" \
+    -s "description:$(syscfg get device::modelDescription)" \
+    -s "hw_version:$(skuapi -g hw_version|grep hw_version|sed -r "s/hw_version *= *(.*)$/\1/")" \
+    -s "manufacturer:$(syscfg get device::manufacturer)" \
+    -s "model_number:$(syscfg get device::modelNumber)" \
+    -s "model_base:$(syscfg get device::model_base)" \
+    -s "device_type:$(syscfg get device::deviceType)" \
+    -s "bh_perf_test_time:$THRULAY_TEST_TIME" \
+    -s "name:$(syscfg get hostname)" | \
+     publish $PUB_TOPIC
+
+# Also take this opportunity to securely synchronize any locally
+# changed or missing configuration data to the Master.
+sleep 1
+sysevent set config_sync::send_update

@@ -1,0 +1,41 @@
+                         ______________________
+
+                          ALTERNATE ACL README
+                         ______________________
+
+
+
+
+
+Introduction
+============
+
+  This directory contains alternate versions of the ACL file for the
+  default port (1883).  This port is unencrypted and require no login.
+  It provides backward compatibility to devices running older firmware
+  that have not implemented secure connections.
+
+  Each file restricts publishing and/or subscribing to various topics.
+
+
+open.acl
+========
+
+  No restrictions whatsoever; equivalent to having no ACL file at all.
+  This is identical to a Master running pre-security firmware.
+
+
+moderate.acl
+============
+
+  Most status messages are permitted along with those needed for setup
+  and firmware updates.  More dangerous command messages (e.g. Node
+  steering) are not allowed.
+
+
+strict.acl
+==========
+
+  Only the bare minimum of messages needed for setup and firmware
+  update.  The Node may not be present in `bh_report' or other status
+  APIs.

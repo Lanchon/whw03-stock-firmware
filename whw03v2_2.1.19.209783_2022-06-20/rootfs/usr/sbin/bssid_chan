@@ -1,0 +1,93 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+
+cli   = require 'cliargs'
+nutil = require 'nodes.util'
+local errout = nutil.errout
+local debout = nutil.debout
+local verbout = nutil.verbout
+
+DEV = require 'nodes.tess.device'
+NET = require 'nodes.tess.network'
+Mac = require('nodes.util.mac').Mac
+
+-- Keep prog_name global for use in error messages
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+-- Keep opts global for access by external modules
+opts = {} -- This needs to be global
+
+
+-- Parse command line using cliargs package.
+function parse_args()
+   local DEFAULT_MSG_PATH = "/tmp/msg"
+   -- Set up command line options
+   cli:set_name( prog_name )
+   cli:set_description 'Perform topology balancing'
+
+   cli:option(  "-m,--msg=DIR",        "Specificy msg dir",     DEFAULT_MSG_PATH       )
+   cli:flag(    "-d,--debug",          "Show debugging output", false                  )
+   cli:flag(    "-v,--verbose",        "Be verbose",            false                  )
+   cli:flag(    "-h,--help",           "This help"                                     )
+   cli:argument("BSSID",               "BSSID (MAC) of AP to find channel for"         )
+   local args, err = cli:parse()
+
+   if not args and err then
+      errout( err )
+      os.exit( 1 )
+   else
+      local opts = {
+         debug   = not not args.debug,
+         verbose = not not args.verbose,
+         BSSID    = args.BSSID,
+         msg      = args.msg
+      }
+      -- If debug is set, output the options
+      if opts.debug then
+         errout( "%s options: ", cli.name )
+         for k,v in pairs( opts ) do
+            errout( "%12s: (%s)", k, tostring( v ))
+         end
+      end
+      return opts
+   end
+end
+
+
+local ok, err = pcall( function()
+   opts = parse_args()
+   DEV.__diddle_DEFAULT_BASE_MSG_DIR( opts.msg )
+
+   local bssid = opts.BSSID
+   local net = NET.snapshot()
+   local mac = Mac:new( bssid )
+
+   verbout( "Will attempt to determine channel for AP BSSID '%s'", tostring( mac ))
+   local node = net:find_node_by_mac( bssid )
+   if not node then
+      error( "Unable to find Node matching BSSID '"..tostring(bssid).."'" )
+   end
+
+   debout( "Node: %s", tostring( node ))
+   for i, interface in ipairs( node.interfaces ) do
+      if interface.mac then
+         local intf_mac = Mac:new( interface.mac )
+         debout( "%2d  %17s  %s", i, tostring( intf_mac ), tostring( interface.channel ))
+         if mac == intf_mac then
+            if interface.channel then
+               debout( "Found matching mac, channel is '%s'", interface.channel )
+               print( interface.channel )
+               break
+            end
+         end
+      end
+   end
+
+   return 0
+end)
+
+if not ok then
+   errout( "%s error: '%s'", prog_name, tostring( err ))
+end
+
+os.exit( ok and 0 or 1 )

@@ -1,0 +1,38 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish PLC commands
+#
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+UUID="$1"
+validate UUID
+MAC_ADDR="$2"
+
+PUB_TOPIC="network/${UUID}/PLC/subdev/${MAC_ADDR}/cmd"
+validate PUB_TOPIC
+
+if [ $DEBUG ];then
+    echo "$0 Options:"
+    echo "   BIND_ADDR: '$BIND_ADDR'"
+    echo "   HOST_PORT: '$HOST_PORT'"
+    echo "   HOST_ADDR: '$HOST_ADDR'"
+    echo "   TOPIC:     '$PUB_TOPIC'"
+fi
+
+LAN_IF="$(syscfg get lan_ifname)"
+validate LAN_IF
+
+IP="$(if_to_ip $LAN_IF)"
+validate IP
+
+mk_infra_payload \
+    -t cmd \
+    -u "$UUID" \
+    -s "$2" \
+    -s "$3" | \
+       publish "$PUB_TOPIC"

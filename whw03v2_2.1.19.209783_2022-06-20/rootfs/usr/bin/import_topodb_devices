@@ -1,0 +1,85 @@
+#!/bin/sh
+#
+# Import TopoDB Node devices.
+#
+#
+TDB_PERSIST_DIR="/var/config/ipa/topodb.devices.persistent"
+TDB_IMPORTED_FILE="$TDB_PERSIST_DIR/.imported-to-devicedb"
+IMPORTER="ddb_omsg_import"
+IMPORTER_OPTS=" -v --action=migrate"
+
+INFRA_FIXED_FILE="$TDB_PERSIST_DIR/.infra-fixed"
+FIXER="ddb_infra_fix"
+FIXER_OPTS=" -d -v --all"
+
+# Exit values:
+# 0 - TopoDB successfully imported
+# 1 - No import needed
+# 2 - Error during import
+STATUS_IMPORTED=0
+STATUS_NOIMPORT=1
+STATUS_BAD=2
+STATUS=$STATUS_IMPORTED
+
+
+migrate () {
+    local STATUS=$STATUS_IMPORTED
+    # Iterate over non-hidden files in TopoDB persistence dir
+    for TOPO_DEV in $(find "$TDB_PERSIST_DIR" -type f -maxdepth 1 ! -name '.*' ! -size 0 2>/dev/null); do
+        printf "Importing topodb device %s: " "$TOPO_DEV"
+        if $IMPORTER $IMPORTER_OPTS "$TOPO_DEV"; then
+            echo "Successfully imported $TOPO_DEV"
+        else
+            echo "$TOPO_DEV migration failed"
+            STATUS=$STATUS_BAD
+        fi
+    done
+    if [ $STATUS -eq $STATUS_IMPORTED ]; then
+        echo "All devices imported successfully"
+    fi
+    return $STATUS
+}
+
+mark_migrated () {
+    touch "$TDB_IMPORTED_FILE"
+}
+
+infra_fix () {
+    echo "Running $FIXER $FIXER_OPTS"
+    $FIXER $FIXER_OPTS
+    return $?
+}
+
+mark_infra_fixed () {
+    touch "$INFRA_FIXED_FILE"
+}
+
+
+if [ -d "$TDB_PERSIST_DIR" ]; then
+    if [ -f "$TDB_IMPORTED_FILE" ]; then
+        echo "Not migrating; TopoDB already imported"
+
+        if [ ! -f "$INFRA_FIXED_FILE" ]; then
+            infra_fix
+            mark_infra_fixed
+        else
+            echo "Not performing infra fix; already done"
+        fi
+        STATUS=$STATUS_NOIMPORT
+    else
+        echo "Calling migrate:"
+        migrate
+        STATUS=$?
+        echo "Done migrating; marking migrated:"
+        mark_migrated
+
+        # Also mark as "infra-fixed" since this migrator version
+        # correctly deals with non-Node infrastructure devices
+        mark_infra_fixed
+    fi
+else
+    echo "No TopoDB persistence data to import" > /dev/console
+    STATUS=$STATUS_NOIMPORT
+fi
+
+exit $STATUS

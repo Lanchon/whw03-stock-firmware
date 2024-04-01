@@ -1,0 +1,577 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+-- Copyright (c) 2018, Belkin Inc. All rights reserved.
+
+cli   = require 'cliargs'
+nutil = require 'nodes.util'
+TESS  = require 'nodes.tess'
+DEV   = require 'nodes.tess.device'
+NET   = require 'nodes.tess.network'
+MAC   = require 'nodes.util.mac'
+Mac   = MAC.Mac
+wifi_math = require'nodes.wifi_math'
+
+--! @brief printf-like function for printing to console.
+--! @param fmt Printf-style format string
+--! Writes formatted results to stderr with an appended newline
+function consout( fmt, ... )
+   local cons = io.open( "/dev/console", "w" )
+   if cons then
+      if fmt == nil then error( "Bad format: type '"..type(fmt).."'",2) end
+      local ok, s = pcall( string.format, fmt .. "\n", ... )
+      if not ok then error( s, 2 ) end
+      cons:write( s )
+      cons:close()
+   end
+end
+
+-- Define custom verbout, debout & errout that sends output to console if opts.to_cons is set
+function verbout( fmt, ... )
+   if opts.to_cons and opts.verbose then
+      consout( fmt, ... )
+   else
+      nutil.verbout( fmt, ... )
+   end
+end
+
+function errout( fmt, ... )
+   if opts.to_cons then
+      consout( fmt, ... )
+   else
+      nutil.errout( fmt, ... )
+   end
+end
+
+function debout( fmt, ... )
+   if opts.to_cons and opts.debug then
+      consout( fmt, ... )
+   else
+      nutil.debout( fmt, ... )
+   end
+end
+
+
+local STATUS = { CHANGE = 0, NO_CHANGE = 1, ERROR = 2 }
+local STATUS_NAME = {}
+STATUS_NAME[STATUS.CHANGE]    = "change"
+STATUS_NAME[STATUS.NO_CHANGE] = "no_change"
+STATUS_NAME[STATUS.ERROR]     = "error"
+
+local net = nil
+
+-- Keep prog_name global for use in error messages
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+-- Keep opts global for access by external modules
+opts = {} -- This needs to be global
+
+-- Helper function to fetch values from out namespace (tesseract)
+local function syscfg_get( name, flag )
+   if type( flag ) == 'string' then
+      ns = flag.."::"
+   else
+      ns = "tesseract::"
+   end
+   return nutil.syscfg_get( ns..name, true )
+end
+
+-- Parse command line using cliargs package.
+function parse_args()
+   local DEFAULT_MSG_PATH = "/tmp/msg"
+   local DEFAULT_MIN_RCPI_DELTA =
+      syscfg_get( "client_steer_rcpi_min_delta", true ) or "20"
+   local DEFAULT_RCPI_MIN_THRESHOLD =
+      syscfg_get( "client_steer_rcpi_min_threshold", true ) or "100"
+   local NODE_STEER_RCPI_MASTER_THRESHOLD =
+      syscfg_get( "node_steer_rcpi_master_threshold", true ) or "60"
+
+   -- Set up command line options
+   cli:set_name( prog_name )
+   cli:set_description 'Perform client steering analysis'
+   cli:option(  "-m,--msg=DIR",            "Specificy msg dir",          DEFAULT_MSG_PATH                 )
+   cli:option(  "-r,--min_rcpi=RCPI",      "Minimum RCPI delta",         DEFAULT_MIN_RCPI_DELTA           )
+   cli:option(  "-t,--min_thresh=RCPI",    "Minimum RCPI to steer",      DEFAULT_RCPI_MIN_THRESHOLD       )
+   cli:option(  "-M,--master_thresh=RCPI", "Min RCPI to stay on Master", NODE_STEER_RCPI_MASTER_THRESHOLD )
+   cli:flag(    "-d,--debug",              "Show debugging output",      false                            )
+   cli:flag(    "-N, --node",              "Client is a Node",           false                            )
+   cli:flag(    "-v,--verbose",            "Be verbose",                 false                            )
+   cli:flag(    "-c,--console",            "Send messages to console",   false                            )
+   cli:flag(    "-h,--help",               "This help"                                                    )
+   cli:argument("FILE",                    "Path to survey file"                                          )
+   local args, err = cli:parse()
+
+   if not args and err then
+      errout( err )
+      os.exit( 1 )
+   else
+      local opts = {
+         to_cons       = not not args.console,
+         debug         = not not args.debug,
+         verbose       = not not args.verbose,
+         rcpi_dt       = tonumber( args.min_rcpi ),
+         rcpi_thresh   = tonumber( args.min_thresh ),
+         master_thresh = tonumber( args.master_thresh ),
+         node          = not not args.node,
+         FILE          = args.FILE,
+         msg           = args.msg
+      }
+      -- Special feature: If syscfg variable {this app name}::debug is 1, set debug flag
+      if syscfg_get( "debug", prog_name ) == '1' then
+         opts.debug = true
+         opts.to_cons = true
+      end
+      -- If debug is set, output the options
+      if opts.debug then
+         local errout = opts.to_cons and consout or errout
+         errout( "%s options: ", cli.name )
+         for k,v in pairs( opts ) do
+            errout( "%12s: (%s)", k, tostring( v ))
+         end
+      end
+      return opts
+   end
+end
+
+
+function load_nb_data( path )
+   return nutil.json_file_to_table( path )
+end
+
+function dump_survey( i, sv, net )
+   local FMT = "%12s: %s"
+   debout( i )
+   local mac = sv.macAddress
+   local node = net:find_node_by_mac( mac )
+   local client_type = "Unknown"
+   if node then
+      client_type = "This is a Node"
+   else
+      client_type = "Apparent client device"
+   end
+   debout( FMT, "MAC address", tostring( sv.macAddress ))
+   debout( FMT, "RCPI", tostring( sv.rcpi ))
+   debout( FMT, "Type", tostring( client_type ))
+end
+
+function dump_surveys( survey_list, net )
+   for i, s in ipairs( survey_list ) do
+      dump_survey( i, s, net )
+   end
+end
+
+function filter_for_nodes( raw_list, net )
+   if raw_list == nil then error( "Missing or nil arg1", 2 ) end
+   local list = {}
+   for _, ap in ipairs( raw_list ) do
+      local mac = ap.macAddress
+      local node = net:find_node_by_mac( mac )
+      if node then table.insert( list, ap ) end
+   end
+   return list
+end
+
+function filter_out_kids( raw_list, client_bssid )
+   if raw_list == nil or client_bssid == nil then
+      error( "Missing or nil argument", 2 )
+   end
+   function find_node_kid_by_mac( node, mac )
+      local result = nil
+      if not node == nil then error( "nil node" ) end
+      if not mac == nil then error( "nil mac" ) end
+      debout( "node.kids: %s", tostring( node.kids ))
+      debout( "Checking node '%s' for kid with mac '%s'", tostring(node), tostring(mac))
+      debout( "Note: # of kids: %d", #node.kids )
+      for i,kid in ipairs( node.kids ) do
+         debout( "Checking kid #%d (%s)", i, tostring( kid ))
+         if kid:has_mac( mac ) then
+            result = node
+            break
+         end
+      end
+
+      return result
+   end
+   local list = {}
+
+   local aNode = net:find_node_by_mac( client_bssid )
+   debout( "Node under evaluation: '%s', #kids: %d", tostring( aNode ), #aNode.kids )
+   local kids = aNode.kids
+   if aNode then
+      for _, ap in ipairs( raw_list ) do
+         local mac = ap.macAddress
+         if find_node_kid_by_mac( aNode, mac ) then
+            debout( "Skipping node '%s'; it is a child", mac )
+         else
+            debout( "Considering non-child node '%s'", mac )
+            table.insert( list, ap )
+         end
+      end
+   else
+      error( "Couldn't find Node for BSSID "..client_bssid )
+   end
+   return list
+end
+
+function filter_out_24g_ap( raw_list )
+   if raw_list == nil then error( "Missing or nil arg1", 2 ) end
+   local list = {}
+   for i, ap in ipairs( raw_list ) do
+      if ap.channel > 14 then
+         debout( "Pick out non-2G ap %s", ap.macAddress )
+         table.insert( list, ap )
+      else
+         debout( "Skipping 24G ap %s", ap.macAddress )
+      end
+   end
+   return list
+end
+
+-- if 6G AP present, filter them out
+-- if no, pick up all
+function clean_undesired_nodes( raw_list )
+    if raw_list == nil then error("Missing or nil arg1", 2 ) end
+    local list = {}
+    local is_6g = 0
+
+    for i, ap in ipairs( raw_list ) do
+        if ap.band == "6G" then
+            debout( "6G ap found" )
+            is_6g = 1
+            break
+        end
+    end
+    
+    if is_6g == 1 then
+        -- 6g ap found
+        for i, ap in ipairs( raw_list ) do
+            if ap.band == "6G" then
+                debout( "Pick out 6G ap %s", ap.macAddress )
+                table.insert( list, ap )
+            else
+                debout( "Skipping non-6G ap %s", ap.macAddress )
+            end
+        end
+    else
+        -- no 6g ap found
+        for i, ap in ipairs( raw_list ) do
+            if ap.band == "2.4G" or ap.channel < 14 then
+                debout( "Skipping 24G ap %s", ap.macAddress )
+            else
+                debout( "Pick out 5G ap %s", ap.macAddress )
+                table.insert( list, ap )
+            end
+        end
+    end
+    return list
+end
+
+function debout2( fmt, ... )
+   if opts.debug then
+      if fmt == nil then error( "Bad format: type '"..type(fmt).."'",2) end
+      if fmt:sub(-1) ~= ' ' then fmt = fmt..'\n' end
+      local ok, s = pcall( string.format, fmt, ... )
+      if not ok then error( s, 2 ) end
+      io.stderr:write( s )
+   end
+end
+
+
+--! @brief Find AP in list with best reception.
+--! @param list Array of survey results
+--! @return If list not empty: MAC, rcpi, channel.  If empty: nil, 0, 0.
+function find_best( list )
+   local result, rcpi, chan = nil, 0, 0
+   local debout = debout2
+   if list and #list > 0 then
+      local best = list[1]
+      debout( "Starting with best.mac == '%s', signal: %d", best.macAddress, best.rcpi )
+      for i, candidate in ipairs( list ) do
+         debout( "Comparing candidate (%d) with (%d): ", candidate.rcpi, best.rcpi )
+         if candidate.rcpi > best.rcpi then
+            best = candidate
+            debout( 'Better found: (#%d %s w/%d)', i, best.macAddress, best.rcpi )
+         else
+            debout "No improvement"
+         end
+      end
+      result, rcpi, chan = best.macAddress, best.rcpi, best.channel
+   else
+      debout "Nothing to do"
+   end
+   return result, rcpi, chan
+end
+
+function get_client_ap_bssid( client_bssid )
+   debout( "get_client_ap_bssid('%s')", client_bssid )
+   local ap_bssid = nil
+   if client_bssid then
+      local client = net:find_client_by_mac(client_bssid)
+      if client then
+         ap_bssid = client:get_apbssid()
+         if ap_bssid then
+            debout( "Note: Currently connected to AP BSSID '%s'", tostring( ap_bssid ))
+         else
+            debout( "Couldn't determine AP BSSID for client '" ..  tostring( client ) .. "'" )
+         end
+      end
+   end
+   return ap_bssid
+end
+
+function get_node_ap_bssid( uuid )
+   if not uuid then error( "Missing argument: uuid", 2 ) end
+   local ap_bssid = nil
+   local bh = net:find_bh_for_uuid( uuid )
+   if bh and bh.data then
+      ap_bssid = bh.data.ap_bssid
+   end
+   return ap_bssid
+end
+
+--! @brief Validate structure of client survey.
+--! @param list client survey table
+--! @return if valid, true
+--! @throw error message if not valid
+local function validate_survey( list )
+   local ok = false
+   local msg = "Invalid survey - VALIDATION UNIMPLEMENTED"
+   function valid_header()
+      return list.uuid ~= nil and
+         list.type ~= nil and
+         list.TS ~= nil and
+         list.data ~= nil
+   end
+   function valid_data()
+      local status = true
+      if list.data.client_bssid and list.data.survey_results then
+         if list.data.survey_results == "" then
+             status = false
+             msg = "survey result is empty"
+             return status
+         end
+         for i, record in ipairs( list.data.survey_results ) do
+            if type( record.macAddress ) ~= 'string' or
+               type( record.rcpi ) ~= 'number' or type( record.channel ) ~= 'number' then
+                  msg = ("bad survey record #%d: macAddress(%s), rcpi(%s), channel(%s)"):format(
+                     i, tostring( record.macAddress), tostring( record.rcpi), tostring( record.channel ))
+                  status = false
+                  break
+            end
+         end
+      else
+         status = false
+         msg = "missing client_bssid or survey_results"
+      end
+      return status
+   end
+
+   if list == nil then
+      msg = "Couldn't parse JSON file"
+   elseif not valid_header() then
+      msg = "Bad header"
+   elseif not valid_data() then
+      -- sub-validator sets msg
+   else
+      ok = true
+   end
+   if not ok then
+      error( msg, 2 )
+   else
+      return ok
+   end
+end
+
+
+function client_decider( json )
+   local status, best = STATUS.ERROR, nil
+   local rcpi, chan
+   local client_bssid = json.data.client_bssid
+   debout( "client_bssid: '%s'", tostring( client_bssid ))
+
+   local client = net:find_client_by_mac( client_bssid )
+   --debout( "client: '%s', client.rssi: '%d'", tostring(client), tonumber(client.rssi) )
+   local current_rcpi = wifi_math.rssi_to_rcpi( client.rssi )
+   --debout( "current_rcpi: %d", current_rcpi )
+   local ap_bssid = get_client_ap_bssid( client_bssid )
+   --debout( "get_client_ap_bssid returns '%s'(%s)", tostring( ap_bssid ), type(ap_bssid) )
+
+   local node_list = filter_for_nodes( json.data.survey_results, net )
+
+   debout( "Client BSSID: %s", tostring( client_bssid ))
+   debout( "# of survey results: %d", #json.data.survey_results )
+   debout( "# of nodes in survey results: %d", #node_list )
+   if opts.debug and opts.verbose then
+      dump_surveys( json.data.survey_results, net )
+   end
+
+   if current_rcpi >= opts.rcpi_thresh then
+      -- No steering needed
+      verbout( "Current RCPI (%d) adequate for %s; no steering will be performed",
+               current_rcpi, client_bssid )
+      status = STATUS.NO_CHANGE
+   else
+      best, rcpi, chan = find_best( node_list )
+      debout( "find_best() returns '%s', %s, %s", tostring(best), tostring(rcpi), tostring(chan) )
+      if best and (current_rcpi > 0) then
+         -- We use Mac class when comparing to hide case & delimiter differences
+         debout( "best: '%s', ap_bssid: '%s'", best, ap_bssid )
+         debout( "rcpi: %d, current_rcpi: %d, opts.rcpi_dt: %d", rcpi, current_rcpi, opts.rcpi_dt )
+         if Mac:new(best) == Mac:new(ap_bssid) then
+            verbout( "%s already connected to AP with best signal", client_bssid )
+            status = STATUS.NO_CHANGE
+         elseif rcpi > (current_rcpi + opts.rcpi_dt) then
+            verbout( "%s's best choice: '%s' with RCPI of %d on channel %d", client_bssid, best, rcpi, chan )
+            status = STATUS.CHANGE
+         else
+            verbout( "Best candidate (%s) for %s only %d better; not good enough to steer",
+                     best, client_bssid, rcpi - current_rcpi )
+            status = STATUS.NO_CHANGE
+         end
+      else
+         -- Empty survey list; nothing to do
+         verbout( "No better AP found for %s; not steering client", client_bssid )
+         status = STATUS.NO_CHANGE
+      end
+   end
+
+   return status, best
+end
+
+--! @brief Steering decider for Node
+--! @param json Survey data converted to table
+--! @param net  Network snapshot
+--! @return status, best where status is CHANGE = 0, NO_CHANGE = 1,
+--! ERROR = 2 and best is best AP as Node object
+function node_decider( json )
+   local status, best = STATUS.ERROR, nil
+   local rcpi, chan
+   local client_bssid = json.data.client_bssid
+   debout( "client_bssid: '%s'", tostring( client_bssid ))
+
+   local ap_bssid = get_node_ap_bssid( json.uuid )
+   debout( "get_node_ap_bssid returns '%s'", tostring( ap_bssid ))
+
+   local node_list = filter_for_nodes( json.data.survey_results, net )
+   node_list = filter_out_kids( node_list, client_bssid )
+   --drop 24G APs and select 6G APs if 6G present
+   node_list = clean_undesired_nodes( node_list )
+
+   local master = net:get_master()
+   local ap_is_master = master:has_mac( ap_bssid )
+
+   debout( "Client BSSID: %s", tostring( client_bssid ))
+   debout( "# of survey results: %d", #json.data.survey_results )
+   debout( "# of preferred nodes in survey results: %d", #node_list )
+   if opts.debug and opts.verbose then
+      dump_surveys( json.data.survey_results, net )
+   end
+
+   local backhaul = net:get_backhaul( json.uuid )
+   local current_rcpi = wifi_math.rssi_to_rcpi( backhaul.rssi )
+   if current_rcpi <= 0 then
+      error( "Invalid current RCPI of " .. tostring( current_rcpi ))
+   else
+      debout( "current rcpi: %d", current_rcpi )
+   end
+
+   if current_rcpi >= opts.rcpi_thresh then
+      -- No steering needed
+      verbout( "Current RCPI (%d) adequate for %s; no steering will be performed",
+               current_rcpi, client_bssid )
+      status = STATUS.NO_CHANGE
+   elseif current_rcpi >= opts.master_thresh and ap_is_master then
+      -- Also No steering needed
+      verbout( "AP is Master w/RCPI %d which is >= %d; no steering will be performed",
+               current_rcpi, opts.master_thresh )
+      status = STATUS.NO_CHANGE
+   else
+      best, rcpi, chan = find_best( node_list )
+      debout( "find_best() returns '%s', %s, %s",
+              tostring(best), tostring(rcpi), tostring(chan) )
+      if best and (current_rcpi > 0) then
+         -- We use Mac class when comparing to hide case & delimiter differences
+         debout( "best: '%s', ap_bssid: '%s'", best, ap_bssid )
+         debout( "rcpi: %d, current_rcpi: %d, opts.rcpi_dt: %d",
+                 rcpi, current_rcpi, opts.rcpi_dt )
+         if Mac:new(best) == Mac:new(ap_bssid) then
+            verbout( "%s already connected to AP with best signal", client_bssid )
+            status = STATUS.NO_CHANGE
+         elseif rcpi > (current_rcpi + opts.rcpi_dt) then
+            -- If new best is Master, make sure current connect is not
+            -- also Master.  No point in shuffling between bnads on
+            -- the same AP.
+            if master:has_mac( best ) and master:has_mac( ap_bssid ) then
+               verbout "Best candidate also interface on Master; not recommending change"
+               status = STATUS.NO_CHANGE
+            else
+               verbout( "%s's best choice: '%s' with RCPI of %d on channel %d",
+                        client_bssid, best, rcpi, chan )
+               status = STATUS.CHANGE
+            end
+         elseif master:has_mac( best ) then
+            verbout( "%s's best choice: Master '%s' with RCPI of %d on channel %d",
+                     client_bssid, best, rcpi, chan )
+            status = STATUS.CHANGE
+         else
+            verbout( "Best candidate (%s) for %s only %d better; not good enough to steer",
+                     best, client_bssid, rcpi - current_rcpi )
+            status = STATUS.NO_CHANGE
+         end
+      else
+         -- Empty survey list; nothing to do
+         verbout( "No candidate APs in %s survey; not steering client", client_bssid )
+         status = STATUS.NO_CHANGE
+      end
+   end
+   debout( "status: %s, best: '%s'", tostring( status ), tostring( best ))
+
+   return status, best
+end
+
+-- outputs best AP to stdout
+-- Exit status:
+--   0: Change indicated
+--   1: No change needed
+-- On error, exception is thrown
+-- Note that if the current AP BSSID cannot be determined then change
+-- will be indicated
+function _main()
+   local status = STATUS.ERROR
+   local best_ap = nil
+   opts = parse_args()
+   DEV.__diddle_DEFAULT_BASE_MSG_DIR( opts.msg )
+   local temp_debug = opts.debug
+   opts.debug = false
+   net = NET.snapshot()
+   opts.debug = temp_debug
+   local json,err = load_nb_data( opts.FILE )
+   if json == nil then error( err ) end
+   validate_survey( json )
+
+   if opts.node then
+      debout( "Operating in NODE mode" )
+      status, best_ap = node_decider( json )
+      debout( "node_decider() %s, '%s'?", tostring( status ), tostring( best_ap ))
+   else
+      debout( "Operating in CLIENT mode" )
+      status, best_ap = client_decider( json )
+      debout( "client_decider() %s, '%s'", tostring( status ), tostring( best_ap ))
+   end
+
+   if best_ap then print( best_ap ) end
+
+   return status
+end
+
+status = STATUS.ERROR
+ok, result = pcall( _main )
+
+if not ok then
+   errout( "%s error: '%s'", prog_name, tostring( result ))
+   status = STATUS.ERROR
+else
+   status = result
+   verbout( "Indication: '%s' (%d)", tostring(STATUS_NAME[status]), status )
+end
+
+os.exit( status )

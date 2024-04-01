@@ -1,0 +1,237 @@
+#!/bin/sh
+#
+# Copyright (c) 2016-2019, Belkin Inc. All rights reserved.
+#
+# Publish neighbor AP RSSI to master nodes
+
+PROGNAME=$(basename $0)
+LOCK_FILE="/var/lock/$PROGNAME"
+DEBUG_OPT=$(syscfg get pub_nb_rssi_debug)
+
+if [ "$DEBUG_OPT" = "1" ]; then
+    DEBUG="1"
+fi
+
+# Send arguments to stderr
+errout () {
+    echo "$*" 1>&2
+}
+
+# Conditionally send arguments to stderr
+debout () {
+    [ "$DEBUG" = "1" ] && errout "$*"
+}
+
+# Send arguments to stderr then exit with error status
+die() {
+    errout "$PROGNAME: " "$*"
+    exit 1
+}
+
+
+#------------------------------------------------------------------------------
+#   help info for the script
+#------------------------------------------------------------------------------
+usage() {
+    printf "Usage:\n"
+    printf "      %s {TOPIC}\n" $PROGNAME
+    printf "      Publish nb AP RSSI to {TOPIC}\n"
+}
+
+
+#------------------------------------------------------------------------------
+#   generate a scan table
+#   input   $1: file name to which you want to save scan table info
+#------------------------------------------------------------------------------
+scan_table_file_generate ()
+{
+    local st_file="$1"
+
+    if [ -z "$st_file" ]; then
+        ulog "node-mode" "pub_nb_nodes_rssi" "scan table file generate failure"
+        cleanup_and_exit
+    fi
+
+    echo -n > "$st_file"
+
+    local wl_intf_names=$(syscfg get lan_wl_physical_ifnames)
+    for wl_intf in $wl_intf_names; do
+        iwlist $wl_intf scanning last >> "$st_file"
+    done
+}
+
+#------------------------------------------------------------------------------
+#   pick out neigbors of desired ssid
+#   input   $1: file you will parse
+#           $2: file contains desired ssids, separated by newline
+#   output  JSON format neighbor info
+#------------------------------------------------------------------------------
+scan_table_file_parse ()
+{
+    local st_file="$1"
+    local desired_ssid="$2"
+    local match="0"
+    local NB_LIST=""
+    local ret
+
+    local BSSID=""
+    local CHANNEL=""
+    local ESSID=""
+    local RSSI=""
+
+    if [ -z "$st_file" -o -z "$desired_ssid" ]; then
+        ulog "node-mode" "pub_nb_nodes_rssi" "scan table file parse, no target st file or ssid file"
+        cleanup_and_exit
+    fi
+
+    while read LINE; do
+
+        if [ "$match" = "1" ]; then
+
+            # CHANNEL
+            echo "$LINE" | grep "Frequency" > /dev/null
+            ret="$?"
+            if [ "$ret" = "0" ]; then
+                FREQUENCY=$(echo "$LINE" | awk -F : '{print $2}' | awk '{print $1}')
+                FREQUENCY=$(echo "$FREQUENCY 1000" | awk '{printf $1 * $2}')
+                change_freq_to_chan $FREQUENCY
+                CHANNEL=$?
+                BAND=$(freq_to_band_name $FREQUENCY)
+            fi
+
+            # RSSI
+            echo "$LINE" | grep "Signal level" | grep "Noise level" > /dev/null
+            ret="$?"
+            if [ "$ret" = "0" ]; then
+                local sig_level=$(echo "$LINE" | cut -d'=' -f 3 | cut -d' ' -f1)
+                local noise_level=$(echo "$LINE" | cut -d'=' -f 4 | cut -d' ' -f1)
+                if [ -n "$sig_level" -a -n "$noise_level" ] ; then
+                    RSSI=`expr $sig_level - $noise_level`
+                fi
+            fi
+
+            # POPULATE NB AP INFO
+            if [ -n "$BSSID" -a -n "$CHANNEL" -a -n "$ESSID" -a -n "$RSSI" -a -n "$BAND" ]; then
+                local nb_item=$(jsongen -s "bssid:${BSSID}" -s "channel:${CHANNEL}" -s "band:${BAND}" -s "ssid:${ESSID}" -s "rssi:${RSSI}")
+                if [ -z "$NB_LIST" ]; then
+                    NB_LIST="$nb_item"
+                else
+                    NB_LIST="$NB_LIST, $nb_item"
+                fi
+                match=0
+            fi
+
+            # AP INFO START INDICATOR
+            echo "$LINE" | grep -E '^ *Cell' > /dev/null
+            ret="$?"
+            if [ "$ret" = "0" ]; then
+                match=0
+            fi
+
+        fi
+
+        if [ "$match" = "0" ]; then
+            echo "$LINE" | grep -F -f "$desired_ssid" > /dev/null
+            ret="$?"
+
+            if [ "$ret" = "0" ]; then
+                # TARGET SSID MATCHED
+                match="1"
+                BSSID=""
+                CHANNEL=""
+                ESSID=""
+                RSSI=""
+                BSSID=$(echo "$BUF_LINE" | awk '{print $5}')
+                ESSID=$(echo "$LINE" | cut -d':' -f2 | sed -n 's/^\"//;s/\"$//;p')
+            fi
+        fi
+
+        BUF_LINE="$LINE"
+    done < $st_file
+
+    local unit_mode=$(syscfg get smart_mode::mode)
+    case "$unit_mode" in
+        "0")
+            mode="unconfigured"
+            ;;
+        "1")
+            mode="slave"
+            ;;
+        "2")
+            mode="master"
+            ;;
+        *)
+            ulog "node-mode" "pub_nb_nodes_rssi" "invalid smart mode"
+            cleanup_and_exit
+            ;;
+    esac
+
+    mk_infra_payload -t status -u "$UUID" -s "mode:$mode" -r "neighbor:$(jsongen -o a -a "$NB_LIST")"
+}
+
+
+#--------------------------------------------------------------------------------
+#       Entry of the script
+#--------------------------------------------------------------------------------
+main ()
+{
+    # Set common values
+    source /etc/init.d/ulog_functions.sh
+    source /etc/init.d/sub_pub_funcs.sh
+    source /etc/init.d/service_wifi/wifi_utils.sh
+    local ST_TMP="/tmp/.st.tmp"
+
+    local WL0_SSID=$(syscfg get wl0_ssid)
+    local WL1_SSID=$(syscfg get wl1_ssid)
+    local WL2_SSID=$(syscfg get wl2_ssid)
+
+    local TARGET_SSID="/tmp/.target_ssid.tmp"
+    echo -n > $TARGET_SSID
+
+    if [ -n "$WL0_SSID" ]; then
+        echo "ESSID:\"$WL0_SSID\"" >> $TARGET_SSID
+    fi
+    if [ -n "$WL1_SSID" ]; then
+        echo "ESSID:\"$WL1_SSID\"" >> $TARGET_SSID
+    fi
+    if [ -n "$WL2_SSID" ]; then
+        echo "ESSID:\"$WL2_SSID\"" >> $TARGET_SSID
+    fi
+
+    if [ -z "$1" ]; then
+        PUB_TOPIC="$(omsg-conf -m WLAN_NEIGHBOR_STATUS | sed "s/+/$TOPIC_UUID/")"
+    else
+        PUB_TOPIC="$1"
+    fi
+
+    validate PUB_TOPIC
+
+    if [ "$DEBUG" = "1" ];then
+        echo "Options:"
+        echo "   BIND_ADDR: $BIND_ADDR"
+        echo "   DAEMON   : $DAEMON_MODE"
+        echo "   HOST_ADDR: $HOST_ADDR"
+        echo "   HOST_PORT: $HOST_PORT"
+        echo "   TOPIC    : $PUB_TOPIC"
+    fi
+    scan_table_file_generate "$ST_TMP"
+    scan_table_file_parse "$ST_TMP" "$TARGET_SSID" | publish "$PUB_TOPIC"
+    rm -f "$ST_TMP" "$TARGET_SSID"
+}
+
+########################################################################
+#                        Mutual exlusion zone
+# We don't want to run multiple simultanious neighbor surveys so use
+# a file lock.  We also don't need to run multiple consecutive
+# surveys; if it just ran then there is no need to run it again.  So
+# have the lock fail (rather than block) and exit.
+(
+    flock -n 9 || die "Neighbor assessment already in progress; aborting"
+    debout "Running with the lock"
+
+    main
+
+    debout "Releasing lock"
+) 9>$LOCK_FILE
+#
+########################################################################

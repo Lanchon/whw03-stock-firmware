@@ -1,0 +1,55 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish nodes steering response to an MQTT topic
+#
+
+# Set common values
+source /etc/init.d/sub_pub_funcs.sh
+source /etc/init.d/tesseract_common.sh
+
+PROG_NAME="$(basename $0)"
+
+usage () {
+    errout "Usage: $PROG_NAME {context ID} {action}"
+    errout "where {context id} is from a pub_bh_reconsider message"
+    errout "and action is 'yes' or 'no'"
+}
+
+CONTEXT_ID="$1"
+if [ "$CONTEXT_ID" = "-h" ] ;then
+    usage
+    exit 0
+fi
+
+ACTION="$2"
+PUB_TOPIC="$(omsg-conf -m RECONSIDER-BACKHAUL-RESPONSE | sed "s/+/${UUID}/")"
+validate PUB_TOPIC
+
+if [ "$DEBUG" = "1" ];then
+    debout "Options:"
+    debout "   BIND_ADDR:      $BIND_ADDR"
+    debout "   HOST_PORT:      $HOST_PORT"
+    debout "   HOST_ADDR:      $HOST_ADDR"
+    debout "   TOPIC:          $PUB_TOPIC"
+    debout "   ACTION:         $ACTION"
+    debout "   CONTEXT_ID:     $CONTEXT_ID"
+fi
+
+if [ -z "$ACTION" -o -z "$CONTEXT_ID" ];then
+    errout "$PROG_NAME Error: Need context ID & action"
+    usage
+    exit 1
+fi
+
+if [ "$ACTION" != "yes" -a "$ACTION" != "no" ]; then
+    errout "Illegal action: '$ACTION'"
+    usage
+    exit 1
+fi
+
+mk_infra_payload -t status                              \
+                 -s "$TESS_JSON_CONTEXT_ID:$CONTEXT_ID" \
+                 -s "$TESS_JSON_RECON_ACT:$ACTION"      \
+   | publish $PUB_TOPIC

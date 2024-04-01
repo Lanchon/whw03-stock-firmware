@@ -1,0 +1,130 @@
+kernel/fs/fat/fat.ko: kernel/fs/nls/nls_base.ko
+kernel/fs/fat/vfat.ko: kernel/fs/fat/fat.ko kernel/fs/nls/nls_base.ko
+kernel/fs/fat/msdos.ko: kernel/fs/fat/fat.ko kernel/fs/nls/nls_base.ko
+kernel/fs/nfs/nfs.ko: kernel/fs/lockd/lockd.ko kernel/net/sunrpc/sunrpc.ko
+kernel/fs/nfs/nfsv2.ko: kernel/fs/nfs/nfs.ko kernel/fs/lockd/lockd.ko kernel/net/sunrpc/sunrpc.ko
+kernel/fs/nfs/nfsv3.ko: kernel/fs/nfs/nfs.ko kernel/fs/lockd/lockd.ko kernel/net/sunrpc/sunrpc.ko
+kernel/fs/lockd/lockd.ko: kernel/net/sunrpc/sunrpc.ko
+kernel/fs/nls/nls_base.ko:
+kernel/fs/nls/nls_cp437.ko: kernel/fs/nls/nls_base.ko
+kernel/fs/nls/nls_iso8859-1.ko: kernel/fs/nls/nls_base.ko
+kernel/fs/cifs/cifs.ko: kernel/fs/nls/nls_base.ko
+kernel/fs/ntfs/ntfs.ko: kernel/fs/nls/nls_base.ko
+kernel/fs/fuse/fuse.ko:
+kernel/crypto/cmac.ko:
+kernel/crypto/hmac.ko:
+kernel/crypto/md4.ko:
+kernel/crypto/md5.ko:
+kernel/crypto/sha1_generic.ko:
+kernel/crypto/des_generic.ko:
+kernel/crypto/authenc.ko:
+kernel/crypto/authencesn.ko: kernel/crypto/authenc.ko
+kernel/crypto/ocf/ocf.ko:
+kernel/crypto/ocf/cryptodev.ko: kernel/crypto/ocf/ocf.ko
+kernel/crypto/ocf/cryptosoft.ko: kernel/crypto/ocf/ocf.ko
+kernel/drivers/misc/qseecom.ko:
+kernel/drivers/misc/ipq40xx_qseecom.ko:
+kernel/drivers/misc/fw_auth_test.ko:
+kernel/drivers/scsi/sd_mod.ko:
+kernel/drivers/mtd/nand/nandsim.ko:
+kernel/drivers/net/ppp/ppp_mppe.ko:
+kernel/drivers/net/ppp/pppoe.ko:
+kernel/drivers/net/ppp/pptp.ko:
+kernel/drivers/net/bonding/bonding.ko:
+kernel/drivers/usb/host/ehci-hcd.ko: kernel/drivers/usb/core/usbcore.ko kernel/drivers/usb/usb-common.ko kernel/fs/nls/nls_base.ko
+kernel/drivers/usb/host/ehci-pci.ko: kernel/drivers/usb/host/ehci-hcd.ko kernel/drivers/usb/core/usbcore.ko kernel/drivers/usb/usb-common.ko kernel/fs/nls/nls_base.ko
+kernel/drivers/usb/host/ehci-platform.ko: kernel/drivers/usb/host/ehci-hcd.ko kernel/drivers/usb/core/usbcore.ko kernel/drivers/usb/usb-common.ko kernel/fs/nls/nls_base.ko
+kernel/drivers/usb/host/xhci-hcd.ko: kernel/drivers/usb/core/usbcore.ko kernel/drivers/usb/usb-common.ko kernel/fs/nls/nls_base.ko
+kernel/drivers/usb/phy/phy-qcom-hsusb.ko:
+kernel/drivers/usb/phy/phy-qcom-ssusb.ko:
+kernel/drivers/usb/phy/phy-qca-baldur.ko:
+kernel/drivers/usb/phy/phy-qca-uniphy.ko:
+kernel/drivers/usb/core/usbcore.ko: kernel/drivers/usb/usb-common.ko kernel/fs/nls/nls_base.ko
+kernel/drivers/usb/dwc3/dwc3.ko: kernel/drivers/usb/usb-common.ko
+kernel/drivers/usb/dwc3/dwc3-qcom.ko:
+kernel/drivers/usb/dwc3/dwc3-ipq40xx.ko:
+kernel/drivers/usb/storage/usb-storage.ko: kernel/drivers/usb/core/usbcore.ko kernel/drivers/usb/usb-common.ko kernel/fs/nls/nls_base.ko
+kernel/drivers/usb/usb-common.ko:
+kernel/drivers/bluetooth/btusb.ko: kernel/drivers/usb/core/usbcore.ko kernel/drivers/usb/usb-common.ko kernel/fs/nls/nls_base.ko
+kernel/drivers/bluetooth/ath3k.ko: kernel/drivers/usb/core/usbcore.ko kernel/drivers/usb/usb-common.ko kernel/fs/nls/nls_base.ko
+kernel/drivers/crypto/msm/qcedev.ko:
+kernel/drivers/crypto/msm/qcrypto.ko: kernel/crypto/des_generic.ko
+kernel/drivers/platform/msm/bootconfig.ko:
+kernel/net/netfilter/nf_conntrack_ftp.ko:
+kernel/net/netfilter/nf_conntrack_irc.ko:
+kernel/net/netfilter/nf_conntrack_sip.ko:
+kernel/net/netfilter/nf_nat_ftp.ko: kernel/net/netfilter/nf_conntrack_ftp.ko
+kernel/net/netfilter/nf_nat_irc.ko: kernel/net/netfilter/nf_conntrack_irc.ko
+kernel/net/netfilter/nf_nat_sip.ko: kernel/net/netfilter/nf_conntrack_sip.ko
+kernel/net/netfilter/xt_DSCP.ko:
+kernel/net/netfilter/xt_HL.ko:
+kernel/net/netfilter/xt_mark2prio.ko:
+kernel/net/netfilter/xt_comment.ko:
+kernel/net/netfilter/xt_dscp.ko:
+kernel/net/netfilter/xt_ecn.ko:
+kernel/net/netfilter/xt_esp.ko:
+kernel/net/netfilter/xt_owner.ko:
+kernel/net/netfilter/xt_pkttype.ko:
+kernel/net/netfilter/xt_quota.ko:
+kernel/net/netfilter/xt_statistic.ko:
+kernel/net/netfilter/xt_time.ko:
+kernel/net/ipv4/netfilter/ipt_ECN.ko:
+kernel/net/sunrpc/sunrpc.ko:
+kernel/lib/libcrc32c.ko:
+kernel/lib/ts_kmp.ko:
+kernel/lib/ts_bm.ko:
+kernel/lib/ts_fsm.ko:
+qca-nss-gre.ko: qca-nss-drv.ko qca-nss-gmac.ko
+qca_da.ko: ath_dev.ko ath_rate_atheros.ko ath_spectral.ko hst_tx99.ko ath_hal.ko umac.ko qca-nss-drv.ko qca-nss-gmac.ko mem_manager.ko ath_dfs.ko qdf.ko asf.ko
+ath_hal.ko: umac.ko qca-nss-drv.ko qca-nss-gmac.ko mem_manager.ko ath_dfs.ko qdf.ko asf.ko
+tdts_core.ko:
+qca-nss-cfi-ocf.ko: qca-nss-crypto.ko qca-nss-drv.ko qca-nss-gmac.ko kernel/crypto/ocf/ocf.ko
+qca-nss-tun6rd.ko: qca-nss-drv.ko qca-nss-gmac.ko
+hst_tx99.ko: ath_hal.ko umac.ko qca-nss-drv.ko qca-nss-gmac.ko mem_manager.ko ath_dfs.ko qdf.ko asf.ko
+qca-nss-drv.ko: qca-nss-gmac.ko
+qca-nss-tunipip6.ko: qca-nss-drv.ko qca-nss-gmac.ko
+ipv6_passthrough.ko:
+ecm.ko: qca-nss-drv.ko qca-nss-gmac.ko kernel/drivers/net/bonding/bonding.ko shortcut-fe-drv.ko shortcut-fe.ko shortcut-fe-ipv6.ko kernel/drivers/net/ppp/pptp.ko kernel/drivers/net/ppp/pppoe.ko nat46.ko
+nat46.ko:
+qca-nss-ipsec.ko: qca-nss-ipsecmgr.ko qca-nss-cfi-ocf.ko qca-nss-crypto.ko kernel/crypto/ocf/ocf.ko qca-nss-drv.ko qca-nss-gmac.ko
+fpbypass.ko: ecm.ko qca-nss-drv.ko qca-nss-gmac.ko kernel/drivers/net/bonding/bonding.ko shortcut-fe-drv.ko shortcut-fe.ko shortcut-fe-ipv6.ko kernel/drivers/net/ppp/pptp.ko kernel/drivers/net/ppp/pppoe.ko nat46.ko
+tdts_nffw.ko: tdts.ko
+shortcut-fe-drv.ko: shortcut-fe.ko shortcut-fe-ipv6.ko
+qca-nss-lag-mgr.ko: qca-nss-drv.ko qca-nss-gmac.ko kernel/drivers/net/bonding/bonding.ko
+qca-nss-gmac.ko:
+ath_dev.ko: ath_rate_atheros.ko ath_spectral.ko hst_tx99.ko ath_hal.ko umac.ko qca-nss-drv.ko qca-nss-gmac.ko mem_manager.ko ath_dfs.ko qdf.ko asf.ko
+qca-ssdk.ko:
+shortcut-fe-ipv6.ko:
+qca-nss-crypto.ko: qca-nss-drv.ko qca-nss-gmac.ko
+kpaniclog.ko:
+ath_spectral.ko: asf.ko qdf.ko
+qca-mcs.ko:
+umac.ko: qca-nss-drv.ko qca-nss-gmac.ko mem_manager.ko ath_dfs.ko qdf.ko asf.ko
+qca-nss-gre-test.ko: qca-nss-gre.ko qca-nss-drv.ko qca-nss-gmac.ko
+qca_ol.ko: umac.ko qca-nss-drv.ko qca-nss-gmac.ko ath_dfs.ko mem_manager.ko ath_spectral.ko asf.ko qdf.ko
+tdts_udb.ko: tdts.ko
+tdts_udbfw.ko: tdts_udb.ko tdts.ko shortcut-fe-cm.ko shortcut-fe.ko shortcut-fe-ipv6.ko
+mem_manager.ko:
+shortcut-fe-cm.ko: shortcut-fe.ko shortcut-fe-ipv6.ko
+ath_dfs.ko: qdf.ko asf.ko
+qca-nss-qdisc.ko: qca-nss-drv.ko qca-nss-gmac.ko
+qca-nss-profile-drv.ko: qca-nss-drv.ko qca-nss-gmac.ko
+qca-nss-macsec.ko: qca-nss-gmac.ko
+asf.ko:
+shortcut-fe.ko:
+ath_pktlog.ko: umac.ko qca-nss-drv.ko qca-nss-gmac.ko mem_manager.ko ath_dfs.ko qdf.ko asf.ko
+qca-nss-crypto-tool.ko: qca-nss-crypto.ko qca-nss-drv.ko qca-nss-gmac.ko
+qca-nss-map-t.ko: qca-nss-drv.ko qca-nss-gmac.ko nat46.ko
+qca-nss-l2tpv2.ko: qca-nss-drv.ko qca-nss-gmac.ko
+qrfs.ko:
+tm.ko: umac.ko qca-nss-drv.ko qca-nss-gmac.ko mem_manager.ko ath_dfs.ko qdf.ko asf.ko
+qca-nss-cfi-cryptoapi.ko: qca-nss-crypto.ko qca-nss-drv.ko qca-nss-gmac.ko
+button-hotplug.ko:
+ath_rate_atheros.ko: ath_hal.ko umac.ko qca-nss-drv.ko qca-nss-gmac.ko mem_manager.ko ath_dfs.ko qdf.ko asf.ko
+tdts_udb_core.ko: tdts.ko
+qca-nss-pptp.ko: kernel/drivers/net/ppp/pptp.ko qca-nss-drv.ko qca-nss-gmac.ko
+tdts.ko:
+essedma.ko:
+qdf.ko:
+smart_antenna.ko: umac.ko qca-nss-drv.ko qca-nss-gmac.ko mem_manager.ko ath_dfs.ko qdf.ko asf.ko
+qca-nss-ipsecmgr.ko: qca-nss-crypto.ko qca-nss-drv.ko qca-nss-gmac.ko

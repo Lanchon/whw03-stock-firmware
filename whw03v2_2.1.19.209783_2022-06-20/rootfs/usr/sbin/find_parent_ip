@@ -1,0 +1,55 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Determine IP of given Node parent.  This may only work for Wi-Fi
+# back-hauled Node Slaves.
+
+PROG_NAME="$(basename $0)"
+if [ "$#" -lt 1 ]; then
+    cat <<EOF
+$PROG_NAME: Error - missing argument
+Usage: $PROG_NAME {BH file path}
+EOF
+    exit 1
+fi
+
+
+toupper() {
+    echo "$1" | tr '[a-z]' '[A-Z]'
+}
+
+BH_FILE=$1
+SLAVE_UUID="$(jsonparse uuid < $BH_FILE)"
+SLAVE_NAME="$(jsonparse data.name </tmp/msg/DEVINFO/$SLAVE_UUID)"
+
+if [ -f "$BH_FILE" ]; then
+    AP_BSSID="$(toupper "$(jsonparse data.ap_bssid < $BH_FILE )")"
+
+    if [ -n "$AP_BSSID" ]; then
+        for DI in /tmp/msg/DEVINFO/*; do
+            AP_LIST=$(jsonparse -i1 data < $DI | \
+                      grep userAp.*_bssid      | \
+                      cut -f2 -d\" )
+            for AP in $AP_LIST; do
+                BSSID=$(toupper $(jsonparse data.$AP < $DI))
+                if [ "$AP_BSSID" = "$BSSID" ]; then
+                    IP=$(jsonparse data.ip < $DI)
+                    echo $IP
+                    exit 0
+                fi
+            done
+            jsonparse data.extra_macs < $DI | grep -iq $AP_BSSID
+            if [ "$?" = "0" ]; then
+                IP=$(jsonparse data.ip < $DI)
+                echo $IP
+                exit 0
+            fi
+        done
+    else
+        echo "No access point association found for $SLAVE_NAME" >&2
+    fi
+else
+    echo "$PROG_NAME Error: Couldn't open $BH_FILE" >&2
+    exit 1
+fi

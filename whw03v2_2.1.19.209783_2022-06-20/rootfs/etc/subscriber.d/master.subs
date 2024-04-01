@@ -1,0 +1,293 @@
+-- Subscriber Master-node subscriptions file  -*- lua -*-
+-- Single-line comments use "--" prefix
+--[[ Multi-line comments
+   are delimited like this  --]]
+-- Entries can span lines.  Use whitespace & alignment to aid
+-- readability.
+
+{  -- This topic communicates backhaul (BH) status.
+   name = "BH",
+   topic = "network/+/BH/status",
+   path  = "BH/%2/status",
+   event = "backhaul::status_data",
+},
+
+{  -- Backhaul performance (published from Slave)
+   name = "BH-perf",
+   topic = "network/+/BH/perf",
+   path  = "BH/%2/status.performance",
+   event = "backhaul::performance"
+},
+
+-- Smart Connect (SC) status
+{  name = "SC",
+   topic = "network/+/SC/status",
+   path  = "SC/%2/status",
+   event = "smart_connect_status",
+},
+
+-- Link status from Slave
+{
+   name = "link_status",
+   topic = "network/+/eth/status",
+   event = "slave_link_status_changed"
+},
+
+{
+   name = "eth_link_status",
+   topic = "network/+/eth/link_status",
+   event = "slave_eth_link_status_changed"
+},
+
+{
+   name = "wifi_link_status",
+   topic = "network/+/wifi/link_status",
+   event = "slave_wifi_link_status_changed"
+},
+
+-- WLAN status
+{
+   name = "WLAN_status",
+   topic = "network/+/WLAN/status",
+   path  = "WLAN/%2/status",
+   event = "wlan::status"
+},
+
+-- WLAN sub device
+{
+   name = "WLAN_subdev",
+   topic = "network/+/WLAN/subdev/+/status",
+   path  = "WLAN/%2/%5/status",
+   event = "mqttsub::wlansubdev",
+},
+
+-- Request subscribed nodes (re)send all subdevice data
+-- Note: This is duplicated in slave.subs
+{
+   name  = "WLAN_subdev_refresh",
+   topic = "network/+/WLAN/cmd/send-all-subdev",
+   event = "wlan::refresh-subdev",
+},
+
+-- ETH sub device
+{
+   name = "ETH_subdev",
+   topic = "network/+/ETH/subdev/+/status",
+   path  = "ETH/%2/%5/status",
+   event = "mqttsub::ethsubdev",
+},
+
+-- devinfo
+{
+   name = "DEVINFO",
+   topic = "network/+/DEVINFO",
+   path  = "DEVINFO/%2",
+   event = "devinfo"
+},
+
+-- configure-me
+{
+   name  = "configure_me",
+   topic = "network/master/CONFIG-ME/subdev/+/status",
+   path  = "%3/%5/status",
+   event = "cloud::alert_user_unconfigured_node"
+},
+
+-- configure-me-done
+{
+   name  = "configure_me_done",
+   topic = "network/master/CONFIG-ME/subdev/+/done",
+   path  = "%3/%5/status",
+},
+
+-- plc-status
+{
+   name  = "plc_status",
+   topic = "network/master/PLC/subdev/+/status",
+   path  = "network/%3/%5/status",
+   event = "plc::status"
+},
+
+-- Firmware Update
+{
+   name  = "FWUPD_STATUS",
+   topic = "network/+/FWUPD/status",
+   path  = "FWUPD/%2/status",
+   event = "fwup_slave_status",
+},
+
+-- Store Slave's parent IP address
+{
+   name  = "PARENT-IP",
+   topic = "BH/+/status.parent_ip",
+   path  = "BH/%2/status.parent_ip",
+   event = "backhaul::parent_ip",
+},
+
+-- Last Will & Testament from a Slave
+{
+   name  = "LAST-WILL",
+   topic = "OFFLINE/+/status",
+   path  = "master/%2/status.offline",
+   event = "slave_offline"
+},
+
+-- Slave graceful shutdown.
+{
+   name  = "NODE-SHUTDOWN",
+   topic = "SHUTDOWN/+/status",
+   path  = "BH/%2/status.shutdown",
+   event = "slave_shutdown"
+},
+
+{
+   name  = "WPS_PIN_SUCCESS",
+   topic = "master/WPS/status/success",
+   event = "WPS::success"
+},
+
+{
+   name  = "WPS_PROCESS",
+   topic = "master/WPS/status/process",
+   event = "wps_process_remote"
+},
+
+-- WLAN neighbor data.  Each Node sends these.
+{
+   name  = "WLAN_NEIGHBOR_STATUS",
+   topic = "network/+/WLAN/neighbors",
+   event = "wlan::node-survey",
+   path  = "WLAN/%2/neighbors",
+},
+
+-- Direct Nodes to request neighbor list from attached client.
+-- Client is specified in message payload.
+-- Note: This is broadcast to all nodes but only the one actively
+-- connected to the specified client should take action.
+-- This is duplicated in slave.subs
+{
+   name  = "WLAN_SEND_CLIENT_SURVEY",
+   topic = "network/master/WLAN/cmd/send-client-survey",
+   event = "wlan::send-client-survey",
+},
+
+-- Client neighbor report.  This is gathered by the Node acting as
+-- that client's AP via 802.11v.
+{
+   name  = "WLAN_CLIENT_SURVEY",
+   topic = "network/+/WLAN/+/neighbors",
+   event = "wlan::client-survey",
+   path  = "WLAN/%2/%4/neighbors",
+},
+
+-- LLDP status; sent by Master & Slaves.  This stanza is duplicated in
+-- master.subs & slave.subs.
+-- Request subscribed nodes (re)send all subdevice data
+-- Topic layout: "network" {sender UUID} "LLDP" {interface} {mac} "status"
+{
+   name  = "LLDP_status",
+   topic = "network/+/LLDP/+/+/status",
+   event = "lldp::device-add",
+   path  = "LLDP/%2/%4/%5/status",
+},
+
+-- LLDP delete (disconnect)
+{
+   name  = "LLDP_delete",
+   topic = "network/+/LLDP/+/+/delete",
+   event = "lldp::device-delete",
+   path  = "LLDP/%2/%4/%5/status.delete",
+},
+
+{
+   name  = "NODES_STEERING_START",
+   topic = "network/master/cmd/nodes_steering_start",
+   path  = "STEERING/cmd/nodes_steering_start",
+   event = "wlan::nodes_steering_start",
+},
+
+{
+   name  = "NODES_TEMPORARY_BLACKLIST",
+   topic = "network/master/cmd/nodes_temporary_blacklist",
+   path  = "STEERING/cmd/nodes_temporary_blacklist",
+   event = "wlan::nodes_temporary_blacklist",
+},
+
+-- This topic communicates smartconnect client connection info.
+{
+   name = "SC_CLIENT_CONN_INFO",
+   topic = "network/+/SC/client_conn_info",
+   path  = "SC/%2/client_conn_info"
+},
+
+-- Response from Node to RECONSIDER-BACKHAUL.
+{
+   name  = "RECONSIDER-BACKHAUL-RESPONSE",
+   topic = "network/+/WLAN/status/reconsider-backhaul-response",
+   event = "wlan::reconsider-backhaul-response",
+   path  = "BH/%2/reconsider-response",
+},
+
+{  -- This topic communicates motion sensing supported.
+   name = "MOTION_SUPPORTED",
+   topic = "motion/+/status.supported",
+   path  = "MOTION/%2/status.supported",
+},
+
+-- Topic to restart motion sensing on master
+{
+   name  = "MOTION_MASTER_RESTART",
+   topic = "motion/master_restart",
+   event = "motion::master_restart",
+},
+
+-- Motion sensing scanned bot data
+{
+   name  = "MOTION_SCANNED_BOTS",
+   topic = "motion/+/scanned_bots",
+   path  = "MOTION/%2/scanned_bots",
+},
+
+-- This topic communicates mesh USB partitions data.
+{  
+   name = "MESH_USB_PARTITIONS",
+   topic = "network/+/MESHUSB/partitions",
+   path  = "MESHUSB/%2/partitions",
+   event = "mesh_usb::partitions_data",
+},
+
+-- This topic communicates serving channels
+{  
+   name = "REFRESH_SERVING_CHANNELS",
+   topic = "network/+/WLAN/cmd/refresh_serving_channels",
+   event = "wlan::refresh_serving_channels",
+},
+
+{  
+   name = "SERVING_CHANNELS",
+   topic = "network/+/WLAN/serving_channels",
+   path = "WLAN/%2/serving_channels"
+},
+
+-- Topology Management Temporary Blacklist
+{
+   name  = "TOPOMGMT_TEMPORARY_BLACKLIST",
+   topic = "topomgmt/cmd/temporary_blacklist",
+   path  = "TOPOMGMT/cmd/temporary_blacklist",
+   event = "topology_management::temporary_blacklist",
+},
+
+-- Topology Management Steer 11v
+{
+   name  = "TOPOMGMT_STEER_11V",
+   topic = "topomgmt/cmd/steer_11v",
+   path  = "TOPOMGMT/cmd/steer_11v",
+   event = "topology_management::steer_11v",
+},
+
+-- CEDAR LRHK violation updates from slave
+{
+   name  = "LRHK_UPDATE_VIOLATION",
+   topic = "network/LRHK/update_violation",
+   event = "lrhk::update_violation",
+},

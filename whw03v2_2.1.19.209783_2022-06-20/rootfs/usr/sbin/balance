@@ -1,0 +1,162 @@
+#!/usr/bin/env lua
+
+package.path = "./?/init.lua;/home/dash/lib/lua/5.1/?.lua;/home/dash/lib/lua/5.1/?/init.lua;"..package.path
+
+cli   = require "cliargs"
+nutil = require 'nodes.util'
+local errout = nutil.errout
+local debout = nutil.debout
+local verbout = nutil.verbout
+
+local DEFAULT_MSG_PATH = "/tmp/msg"
+local DEFAULT_PILETO   = "5GL"
+
+-- Keep prog_name global for use in error messages
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+-- Keep opts global for access by external modules
+opts  = { prog_name = prog_name }
+
+function valid_band( value )
+   return ({ ["5GL"] = true, ["5GH"] = true })[ value ]
+end
+
+function parse_args()
+   -- Set up command line options
+   cli:set_name( prog_name                                              )
+   cli:set_description( 'Perform topology balancing'                    )
+   cli:option( "-m,--msg=DIR",   "Specificy msg dir",  DEFAULT_MSG_PATH )
+   cli:flag(   "-d,--debug",     "Show debugging output",         false )
+   cli:flag(   "-v,--verbose",   "Be verbose",                    false )
+   cli:flag(   "-a,--act",       "Act on recommendation",         false )
+   cli:flag(   "-n,--dry-run",   "dry run (show commands only",   false )
+   cli:flag(   "-x,--poo",       "Un-balance (for testing only)", false )
+   cli:option( "-X,--pileto=BAND", "Unbal. to {5GL/5GH}"                )
+   cli:flag(   "-h,--help",      "This help"                            )
+
+   local args, err = cli:parse()
+
+   if not args and err then
+      errout( err )
+      os.exit( 0 )
+   else
+      if args.pileto then args.poo = true end
+      args.pileto = args.pileto and args.pileto:upper() or DEFAULT_PILETO
+      if not valid_band( args.pileto ) then
+         errout( "%s: Error Invalid band '%s'", prog_name, args.pileto )
+         cli:print_help()
+         os.exit( 1 )
+      end
+      local opts = {
+         debug   = not not args.debug,
+         verbose = not not args.verbose,
+         act     = not not args.act,
+         dry_run = not not args["dry-run"],
+         poo     = not not args.poo,
+         pileto  = args.pileto,
+         path    = args.msg,
+      }
+      -- If debug is set, output the options
+      if opts.debug then
+         errout( "%s options: ", cli.name )
+         for k,v in pairs( opts ) do
+            errout( "%12s: (%s)", k, tostring( v ))
+         end
+      end
+      return opts
+   end
+end
+
+
+TESS= require'nodes.tess'
+NET = require'nodes.tess.network'
+Rebalancer = require'nodes.tess.rebalance'
+OPT = require'nodes.tess.optimizer'
+DEV = require'nodes.tess.device'
+
+local function count_keys( t )
+   local count = 0
+   for k,_ in pairs( t ) do
+      count = count + 1
+   end
+   return count
+end
+
+local function count_updates( t )
+   local count = 0
+   for band, list in pairs( t ) do
+      for _,item in ipairs( list ) do
+         count = count + 1
+      end
+   end
+   return count
+end
+
+function mark_node_as_manipulated( node )
+   debout( "Marking node '%s' manipulated:", tostring( node ))
+   if node then
+      local uuid = node.uuid
+      if uuid then
+         --local lfs = require 'lfs'
+         local misc = require'nodes.tess.misc'
+         local fname = nutil.join_dirs( misc.DIRS.TESS_BAL_RECENTLY_BALANCED_NODES, uuid )
+         debout( "Marking '%s'", fname )
+         io.open( fname, "w" ):write( "xyzzy\n")
+      end
+   end
+end
+
+function _main()
+   opts = parse_args()
+   DEV.__diddle_DEFAULT_BASE_MSG_DIR( opts.path )
+   local net = NET.snapshot()
+   local opti = OPT:new( net )
+   local result = opti:analyze()
+   local status = result and 1 or 0
+
+   verbout( "Balancing "..(result and "" or "not ").."needed"  )
+
+   if (result or opts.poo) and opts.act then
+      local balancer_opts = {}
+      if opts.poo then
+         balancer_opts.debalance = true
+         balancer_opts.pile_onto = opts.pileto
+      end
+      result, updates = opti:balance(balancer_opts)
+      if result then
+         if opts.verbose then
+            local update_count = count_updates( updates )
+            if update_count > 0 then
+               verbout "Network balance will be changed.  Changes:"
+               Rebalancer.show_list( updates )
+            else
+               print( "There are no changes to make" )
+            end
+         end
+         local steerage_cmds, to_be_updated = opti:act_on( updates )
+         if opts.dry_run then
+            verbout( "Recommend issuing these commands:" )
+            for i, cmd in ipairs( steerage_cmds ) do
+               print( tostring(cmd) )
+            end
+         else
+            verbout "Executing commands:"
+            for i, cmd in ipairs( steerage_cmds ) do
+               verbout( "%2d: %s", i, tostring(cmd) )
+               cmd:run()
+            end
+            -- Mark those nodes as having been manipulated
+            debout( "Marking %d 'updates' as manipulated:", #to_be_updated )
+            for _,node in ipairs( to_be_updated ) do
+               debout( "Marking node '%s' as manipulated", tostring(node))
+               mark_node_as_manipulated( node )
+            end
+         end
+      else
+         verbout "Network was NOT rebalanced"
+      end
+   end
+   return status
+end
+
+os.exit( _main())

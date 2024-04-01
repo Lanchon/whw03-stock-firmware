@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Startup fimware update checker
+#
+#-----------------------------------------------------------------------------------------------
+
+DURATION=60
+
+CheckUptime()
+{
+    cat /proc/uptime | cut -d'.' -f1
+}
+
+CheckConnection()
+{
+    local DEFAULT_ROUTER=$(sysevent get default_router)
+
+    if [ -z "$DEFAULT_ROUTER" ];then
+        return 1
+    fi
+
+    sleep 4
+}
+
+CheckUpdate()
+{
+    local END_TIME=$(expr $(CheckUptime) + $DURATION)
+
+    while true; do
+
+        local CURRENT=$(CheckUptime)
+
+        if [ $CURRENT -ge $END_TIME ]; then
+            break 
+        fi
+
+        if CheckConnection; then
+
+            # Checking Once
+
+            if pidof fwupd > /dev/null; then
+                break
+            fi
+            
+            echo "Checking update.. $CURRENT" >> /dev/console
+
+            /etc/init.d/service_autofwup.sh check_update 
+
+            break
+        fi
+
+        sleep 4
+
+    done
+}
+
+#-----------------------------------------------------------------------------------------------
+
+sleep 60
+
+CheckUpdate
+
+#-----------------------------------------------------------------------------------------------

@@ -1,0 +1,175 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+--
+-- Copyright (c) 2016, Belkin Inc. All rights reserved.
+--
+--! @file
+
+local prog_name = string.match( arg[0], ".*/(.*)" )
+
+local hdk  = require 'libhdklua'
+local sc   = require('libsysctxlua').new()
+local tdb  = require('libtopodblua').db(sc)
+local util = require 'nodes.util'
+
+--! @brief Create a partially initialized device table
+--! Note: An attempt was made to also preset hostname at this time;
+--! this resulted in an error from setDevice complaining of converting
+--! the table to struct.
+--! @param uuid The UUID to use as the deviceID for this device
+--! @param fw_ver The firmware version as a string
+function mk_dev( uuid, fw_ver )
+   return {
+      deviceID = hdk.uuid( uuid ),
+      model = {
+         deviceType = 'Infrastructure',
+      },
+      unit = {
+         firmwareVersion = fw_ver
+      }
+   }
+end
+
+
+--! @brief Initialize userDeviceName if unset
+--! If userDeviceName *is* set then leave it alone.
+--! @param id The device hdk.uuid
+--! @param hostname Hostname to use
+function init_dev_user_device_name( id, hostname )
+   local hostname_field = "userDeviceName"
+   local current_hostname = nil
+
+   if tdb:readLock() then
+      local dev = tdb:getDevice( id )
+      sc:rollback()
+      if dev then
+         if dev.properties then
+            for _,prop in ipairs( dev.properties ) do
+               -- print( prog_name .. ": Checking property " .. prop.name )
+               if prop.name == hostname_field then
+                  current_hostname = prop.value
+                  break
+               end
+            end
+         else
+            dev.properties = {}
+         end
+
+         if current_hostname == nil then
+            -- print( prog_name .. ": No user specified name found; setting hostname to '"
+            --        .. hostname .. "'" )
+            dev.properties[ #dev.properties + 1 ] = {
+               name = hostname_field,
+               value = hostname
+            }
+            if( tdb:writeLock()) then
+               local changed = tdb:setDevice( dev, 4096 )
+               sc:commit()
+            else
+               print( prog_name .. ": Error could not write lock topodb" )
+            end
+         else
+            print( prog_name..": Hostname already set to '"..
+                   current_hostname.. "', skipping" )
+         end
+      else
+         print( string.format( "%s: Error could not find device '%s'", prog_name, tostring(id) ))
+      end
+   else
+      print( string.format( "%s: Error could not read-lock topodb", prog_name ))
+   end
+end
+
+
+--! @brief Set UUID of device as needed.
+--! Fetch current device with mac, see if it has matching UUID.
+--! If not, create new device with desired UUID and merge old one into
+--! it.  Also update firmware version & hostname if present
+--! @param mac Mac of device
+--! @param new_uuid String containing desired UUID
+--! @param fw_ver firmware version
+--! @param hostname Device hostname
+--! @return true on success.  false, err message on fail
+function update_uuid( mac, new_uuid, fw_ver, hostname )
+   local status, err = false, nil
+   local dev, err = util.get_device_by_mac( mac )
+   if dev then
+      -- print( string.format( "%s: Current UUID is '%s'", prog_name, tostring( dev.deviceID )))
+      if string.upper(new_uuid) ~= string.upper( tostring( dev.deviceID )) then
+         local newdev = mk_dev( new_uuid, fw_ver )
+         if( tdb:writeLock()) then
+            -- Use confidence level 4096 as per Henry Sia.  This value
+            -- is defined in devident_identification.h as:
+            -- #define DEVIDENT_IDENTIFICATION_CONFIDENCE_HNAP 0x1000
+            -- Reportedly this is not defined within the Lua environment.
+            local changed = tdb:setDevice( newdev, 4096 )
+            local status = tdb:mergeDevices( newdev.deviceID, dev.deviceID )
+            sc:commit()
+            if status  then
+               print( string.format( "%s: Topodb UUID rewrite Success; deviceID now '%s'",
+                                     prog_name, tostring( newdev.deviceID )))
+               init_dev_user_device_name( newdev.deviceID, hostname )
+            else
+               print( prog_name..": mergeDevices returns ", status )
+               err = string.format( "mergeDevices returns %s", tostring( status ))
+            end
+         else
+            err = "Error acquiring topodb write lock"
+         end
+      else
+         print( prog_name .. ": Note: device already has desired UUID; no change needed" )
+         -- Here, the UUID has been confirmed as correct.  Now we
+         -- check the FW version & update if needed... IF a FW version
+         -- was provided on the command line
+         if fw_ver and ( dev.unit == nil or dev.unit.firmwareVersion ~= fw_ver ) then
+            print( prog_name .. ": Updating FW version" )
+            if( tdb:writeLock()) then
+               dev.unit = dev.unit or {}
+               dev.unit.firmwareVersion = fw_ver
+               -- Note elevated confidence value; we are the only
+               -- definitive source for firmware version
+               local changed = tdb:setDevice( dev, 100000 )
+               sc:commit()
+               print( prog_name .. ": Device updated, Changed:", changed )
+            else
+               err = "Unable to write-lock for fw version update"
+            end
+         else
+            print( prog_name .. ": FW version correct ("..fw_ver..")" )
+         end
+         init_dev_user_device_name( dev.deviceID, hostname )
+         status, err = true, nil
+      end
+   else
+      err = string.format( "Error finding device '%s': %s", mac, tostring( err ))
+   end
+   return status, err
+end
+
+
+function _main()
+   if #arg < 2 then
+      print( string.format( "Usage: %s <mac> <uuid> <fw version>", prog_name ))
+      os.exit( 1 )
+   end
+
+   local mac = arg[1]
+   local uuid = arg[2]
+   local fw_ver = arg[3]
+   local hostname = arg[4]
+   print( "Command: ", prog_name )
+   print( "mac:", mac )
+   print( "new uuid:", uuid )
+   print( "hostname:", hostname )
+   print( "fw_ver:", fw_ver )
+
+   update_uuid( mac, uuid, fw_ver, hostname )
+end
+
+
+local ok,status = pcall( _main )
+
+if not ok then
+   io.stderr:write( string.format( "Error: %s", tostring( status )))
+   os.exit( 1 )
+end

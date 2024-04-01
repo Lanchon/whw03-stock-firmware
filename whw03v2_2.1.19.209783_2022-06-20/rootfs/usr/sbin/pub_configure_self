@@ -1,0 +1,44 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish CONFIG-SELF MQTT message.  Master send this to Slave.  Upon
+# receipt, Slave begins wired setup.  Note that Master should start
+# setup on its' end too
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+if [ "$#" -lt 1 ]; then
+    cat <<EOF
+Error: missing argument
+Usage: $(basename $0) UUID
+EOF
+fi
+
+UUID="$1"
+validate UUID
+
+PUB_TOPIC="$(omsg-conf -u configure_self | sed "s/+/$UUID/" )"
+validate PUB_TOPIC
+
+if [ $DEBUG ];then
+    echo "$0 Options:"
+    echo "   BIND_ADDR: '$BIND_ADDR'"
+    echo "   HOST_PORT: '$HOST_PORT'"
+    echo "   HOST_ADDR: '$HOST_ADDR'"
+    echo "   TOPIC:     '$PUB_TOPIC'"
+fi
+
+LAN_IF="$(syscfg get lan_ifname)"
+validate LAN_IF
+
+IP="$(if_to_ip $LAN_IF)"
+validate IP
+
+mk_infra_payload \
+    -t CONFIG-SELF \
+    -u "$(syscfg get device::uuid)" \
+    -s "why:Because Mom says so" | \
+       publish "$PUB_TOPIC"

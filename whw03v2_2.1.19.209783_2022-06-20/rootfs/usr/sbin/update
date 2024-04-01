@@ -1,0 +1,71 @@
+#!/bin/sh
+
+Debug()
+{
+#	return
+	echo "[up.sh] $@" >> /dev/console
+} 
+
+Update_eMMC()
+{
+	BootPart = $1
+	FirmwareImage = $2
+
+	if [ "$BootPart" == "1" ]; then
+        	KERNEL_BLKDEV="mmcblk0p16"
+        	FIRMWARE_BLKDEV="mmcblk0p17"
+	else
+        	KERNEL_BLKDEV="mmcblk0p14"
+        	FIRMWARE_BLKDEV="mmcblk0p15"
+	fi
+
+	Debug "Writing image: $FirmwareImage $KERNEL_BLKDEV .."
+
+	dd if=$FirmwareImage of=/dev/$KERNEL_BLKDEV bs=4M count=1
+	dd if=$FirmwareImage of=/dev/$FIRMWARE_BLKDEV bs=4M skip=2
+
+	if [ $? != 0 ]; then
+        	exit 1
+	fi
+}
+
+Update_NAND()
+{
+	BootPart = $1
+	FirmwareImage = $2
+
+	if [ "$BootPart" == "1" ]; then
+        	KERNEL_BLKDEV="`cat /proc/mtd | grep -m 1 alt_kernel | cut -d: -f1`"
+	else
+        	KERNEL_BLKDEV="`cat /proc/mtd | grep -m 1 kernel | cut -d: -f1`"
+	fi
+
+	Debug "Erasing kernel and rootfs partitions: $KERNEL_BLKDEV $FIRMWARE_BLKDEV .."
+	flash_erase /dev/$KERNEL_BLKDEV 0 0
+
+	Debug "Writing kernel and rootfs image: $FirmwareImage to $KERNEL_BLKDEV .."
+	nandwrite -p /dev/$KERNEL_BLKDEV $FirmwareImage
+
+	if [ $? != 0 ]; then
+        	exit 1
+	fi
+}
+
+Debug "update $@"
+
+if [ ! -e "$1" ]; then
+	exit 1
+fi
+
+FirmwareImage="$1"
+
+source /usr/sbin/fwcc verify_signature $FirmwareImage
+
+BootPart=$(syscfg get fwup_boot_part)
+
+if [ -e "/dev/mmcblk0p17" ]; then
+	Update_eMMC $BootPart $FirmwareImage
+else
+	Update_NAND $BootPart $FirmwareImage
+fi
+

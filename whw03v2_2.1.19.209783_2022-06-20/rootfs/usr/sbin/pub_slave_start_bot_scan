@@ -1,0 +1,27 @@
+#!/bin/sh
+#
+# Copyright (c) 2021, Belkin Inc. All rights reserved.
+#
+# Publish stdin to a specified topic
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PROGNAME=$(basename $0)
+
+PUB_TOPIC="motion/slave_start_bot_scan"
+SCAN_LIST="$1"
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   STATE    : $STATE"
+fi
+
+[ $DEBUG ] && echo "${PROG_NAME}: publishing slave start bot scan."
+
+echo "$SCAN_LIST" | publish "$PUB_TOPIC"

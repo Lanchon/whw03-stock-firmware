@@ -1,0 +1,401 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Nodes Cached Firmware Update - Slave
+#
+#-----------------------------------------------------------------------------------------------
+
+source /usr/sbin/update_nodes_defs
+
+SERVER_CACHE="$(sysevent get master::ip)/cache"
+UPDATE_ID=
+UPDATE_REQUEST=
+UPDATE_OPTION=
+STATUS_INFO=
+REBOOT_WAIT=4
+
+FormatString()
+{
+    local STRING=$(echo "$*" | sed 's/ /_/g')
+    echo -s $STRING
+}
+
+UpdateStatus()
+{
+    local VERSION="$CFG_FIRMWARE_VERSION:$(syscfg get $CFG_FIRMWARE_VERSION)"
+    local NEW_VERSION="$CFG_NEW_FIRMWARE_VERSION:$(syscfg get $CFG_NEW_FIRMWARE_VERSION)"
+    local DATE="$CFG_NEW_FIRMWARE_DATE:$(syscfg get $CFG_NEW_FIRMWARE_DATE)"
+    local DETAILS="$CFG_NEW_FIRMWARE_DETAILS:$(syscfg get $CFG_NEW_FIRMWARE_DETAILS)"
+    local STATUS_DETAILS="$CFG_NEW_FIRMWARE_STATUS_DETAILS:$(syscfg get $CFG_NEW_FIRMWARE_STATUS_DETAILS)"
+    local LAST_CHECK="$CFG_LAST_CHECK:$(syscfg get $CFG_LAST_CHECK)"
+
+    VERSION="$(FormatString ${VERSION})"
+    NEW_VERSION="$(FormatString ${NEW_VERSION})"
+    DATE="$(FormatString ${DATE})"
+    DETAILS="$(FormatString ${DETAILS})"
+    STATUS_DETAILS="$(FormatString ${STATUS_DETAILS})"
+    LAST_CHECK="$(FormatString ${LAST_CHECK})"
+
+    STATUS_INFO="$VERSION $NEW_VERSION $DATE $DETAILS $STATUS_DETAILS $LAST_CHECK"
+}
+
+UpdateProgress()
+{
+    local UPDATE="$FIELD_UPDATE_ID:$UPDATE_ID"
+    local STATE="$FIELD_STATE:$1"
+    local STEP="$(sysevent get $SYS_STATE)"
+    local PROGRESS="$FIELD_PROGRESS:$STEP,$(sysevent get $SYS_PROGRESS)"
+    local LAST_CHECK
+
+    # Ensure that the last successful check time is included in the status message
+    if [ -z "$STATUS_INFO" ]; then
+        LAST_CHECK="$CFG_LAST_CHECK:$(syscfg get $CFG_LAST_CHECK)"
+        STATUS_INFO="$(FormatString ${LAST_CHECK})"
+    fi
+    if [ "$1" == $FIELD_CHECKING ]; then
+
+        PROGRESS="$FIELD_PROGRESS:$SYS_STATE_CHECKING,50"
+    fi
+    if [ "$1" == $FIELD_UPDATING ]; then 
+
+        case "$STEP" in
+            $SYS_STATE_DOWNLOADING | $SYS_STATE_FLASHING | $SYS_STATE_REBOOT)
+                ;;
+            *)
+                PROGRESS="$FIELD_PROGRESS:$SYS_STATE_CHECKING,100"
+                ;;
+        esac
+    fi
+
+    Debug $STATE $PROGRESS
+
+    pub_fwup_status -s $UPDATE -s $STATE -s $PROGRESS $2 $STATUS_INFO
+    sleep 1
+}
+
+CheckFirmware()
+{
+    sysevent set $SYS_UPDATE_STATE $FIELD_CHECKING
+
+    Debug "checking firmware"
+
+    UpdateProgress $FIELD_CHECKING
+
+    fwupd -m 1
+
+    UpdateStatus
+
+    local NEW_VERSION=$(syscfg get $CFG_NEW_FIRMWARE_VERSION)
+    local STATUS_DETAILS=$(syscfg get $CFG_NEW_FIRMWARE_STATUS_DETAILS)
+    local RET_CODE=
+    local STATE=
+
+    if [ -z "$NEW_VERSION" ]; then
+
+        RET_CODE=9
+
+        if [ -z "$STATUS_DETAILS" ]; then
+            NEW_VERSION="up to date"
+        fi
+    fi
+
+    Debug "new version: $NEW_VERSION $STATUS_DETAILS"
+
+    if [ "$UPDATE_REQUEST" == "$FIELD_UPDATE" ] && [ ! "$RET_CODE" ]; then
+
+        STATE=$FIELD_UPDATING
+    else
+        if [ "$UPDATE_ID" == $FIELD_SLAVE ]; then
+            UPDATE_ID="0"
+        fi
+        STATE=$FIELD_DONE
+    fi
+
+    UpdateProgress $STATE
+
+    if [ $STATE == $FIELD_DONE ]; then
+        sysevent set $SYS_UPDATE_STATE 
+    fi
+
+    Debug
+
+    return $RET_CODE
+}
+
+CheckCache()
+{
+    Debug "checking: $1"
+
+    local URL="http://$SERVER_CACHE/$1"
+
+    if curl --output /dev/null --silent --head --fail "$URL"; then
+        return 0
+    fi
+
+    return 9
+}
+
+WaitForReboot()
+{
+    local COUNT=0
+
+    while true; do
+        
+        COUNT=$(expr $COUNT + 1)
+
+        Debug "waiting for reboot $COUNT*"
+
+        if [ $COUNT -ge $REBOOT_WAIT ]; then
+            return
+        fi
+
+        if [ "$(sysevent get $SYS_WAIT_FOR_REBOOT)" ]; then
+
+            sysevent set $SYS_WAIT_FOR_REBOOT
+            COUNT=0
+        fi
+
+        sleep 4
+    done
+}
+
+DownloadAndFlash()
+{
+    local FIRMWARE="$1"
+    local STATUS_DETAILS=
+
+    UpdateProgress $FIELD_UPDATING
+
+    if [ "$FIRMWARE" ]; then
+
+        Debug "updating: $FIRMWARE"
+
+        local URL="http://$SERVER_CACHE/$FIRMWARE"
+
+        fwupd -m 2 -U $URL &
+    else
+
+        Debug
+        Debug "updating from server"
+        Debug
+
+        fwupd -m 2 -O &
+    fi
+
+    while true; do
+
+        sleep 3
+
+        UpdateProgress $FIELD_UPDATING
+
+        if ! pidof fwupd > /dev/null; then 
+            break
+        fi
+    done
+
+    STATUS_DETAILS=$(syscfg get $CFG_NEW_FIRMWARE_STATUS_DETAILS)
+   
+    if [ "$STATUS_DETAILS" ]; then
+
+        Debug $STATUS_DETAILS
+    fi
+
+    Debug "done"
+    Debug
+
+    UpdateStatus
+    
+    if [ "$(sysevent get $SYS_UPDATE_STATE)" == $FIELD_DONE ]; then
+
+        sysevent set $SYS_STATE $SYS_STATE_REBOOT 
+
+        UpdateProgress $FIELD_DONE
+    else
+        if [ "$UPDATE_ID" == $FIELD_SLAVE ]; then
+            UPDATE_ID="0"
+        fi
+
+        UpdateProgress $FIELD_DONE
+        return
+    fi
+
+    WaitForReboot
+
+    Debug
+    Debug "reboot"
+    Debug
+
+    sysevent set $SYS_UPDATE_STATE $FIELD_REBOOT
+    rm -f $PATH_DOWNLOADS/*
+
+    switch_boot_image
+}
+
+RequestFirmware()
+{
+    Debug "requesting: $1"
+
+    UpdateProgress $FIELD_UPDATING "-s $FIELD_NEW_FIRMWARE:$1"
+}
+
+UpdateFirmware()
+{
+    if ! CheckFirmware; then
+        return;
+    fi
+
+    local FIRMWARE_URL="$(sysevent get $SYS_NEW_FIRMWARE_URL)"
+    local FIRMWARE="$(basename $FIRMWARE_URL)"
+
+    if [ "$FIRMWARE" ]; then
+
+        if CheckCache $FIRMWARE; then
+
+            DownloadAndFlash $FIRMWARE
+
+        elif [ "$UPDATE_OPTION" == $FIELD_NO_CACHE ] || [ "$UPDATE_ID" == $FIELD_SLAVE ]; then
+
+            DownloadAndFlash
+        else
+
+            RequestFirmware $FIRMWARE_URL
+        fi
+    fi
+
+    sysevent set $SYS_UPDATE_STATE
+}
+
+UpdateWait()
+{
+    if [ "$(sysevent get $SYS_UPDATE_STATE)" != $FIELD_DONE ]; then
+        return
+    fi
+
+    sysevent set $SYS_WAIT_FOR_REBOOT 1
+}
+
+UpdateInProgress()
+{
+    if pidof fwupd > /dev/null || [ "$(sysevent get $SYS_UPDATE_STATE)" ]; then
+        Debug "updating.."
+    else
+        return 1
+    fi
+}
+
+ProcessRequest()
+{
+    local VERSION="$(syscfg get $CFG_FIRMWARE_VERSION)" 
+
+    Debug
+
+    if [ "$1" == $SYS_MASTER_REQUEST ]; then
+
+        local MASTER_REQUEST="$(sysevent get $SYS_MASTER_REQUEST)"
+   
+        if [ ! -f "$MASTER_REQUEST" ]; then
+            return
+        fi
+
+        UPDATE_ID="$(jsonparse -f $MASTER_REQUEST data.$FIELD_UPDATE_ID)"
+        UPDATE_REQUEST="$(jsonparse -f $MASTER_REQUEST data.$FIELD_REQUEST)"
+        UPDATE_OPTION="$(jsonparse -f $MASTER_REQUEST data.$FIELD_OPTION)"
+
+        Debug "update request from master: $UPDATE_REQUEST" 
+        Debug
+
+        if [ "$UPDATE_REQUEST" == "$FIELD_WAIT" ]; then
+
+            UpdateWait
+            return
+        fi
+    else
+
+        UPDATE_ID=$FIELD_SLAVE
+
+        if [ "$1" == 1 ]; then UPDATE_REQUEST=$FIELD_CHECK; fi
+        if [ "$1" == 2 ]; then UPDATE_REQUEST=$FIELD_UPDATE; fi
+
+        Debug "update command: $UPDATE_REQUEST"
+        Debug
+    fi
+
+    if UpdateInProgress; then
+        return
+    fi
+   
+    local WIP=$(sysevent get ipv4_wan_ipaddr)
+
+    Debug "$UPDATE_ID  $WIP"
+    Debug
+    Debug "$VERSION"
+    Debug
+
+    case "$UPDATE_REQUEST" in
+
+        "$FIELD_CHECK")
+
+            CheckFirmware
+            ;;
+
+        "$FIELD_UPDATE")
+
+            UpdateFirmware
+            ;;
+
+        *)
+            ;;
+    esac
+}
+
+CheckBackhaulStatus()
+{
+    local UUID="$(syscfg get device::uuid)"
+    local FILE="$(syscfg get subscriber::file_prefix)/BH/$UUID/status.parent_ip"
+    local WIP="$(sysevent get ipv4_wan_ipaddr)"
+    local PIP
+
+    if [ -f $FILE ]; then
+        PIP=$(cat $FILE)
+    fi
+
+    Debug
+    Debug "$UUID  $WIP ==> $PIP"
+    Debug
+}
+
+RefreshStatus()
+{
+    if UpdateInProgress; then
+        return
+    fi
+
+    UpdateStatus
+    UpdateProgress $FIELD_READY
+}
+
+#-----------------------------------------------------------------------------------------------
+
+if [ "$(syscfg get smart_mode::mode)" != "1" ]; then
+    exit 1
+fi
+
+case "$1" in
+
+    $SYS_MASTER_REQUEST | 1| 2)
+
+        ProcessRequest $1
+        ;;
+
+    $SYS_BACKHAUL_PARENT_IP)
+
+        CheckBackhaulStatus $1
+        RefreshStatus
+        ;;
+
+    *)
+        ;;
+esac
+
+#-----------------------------------------------------------------------------------------------

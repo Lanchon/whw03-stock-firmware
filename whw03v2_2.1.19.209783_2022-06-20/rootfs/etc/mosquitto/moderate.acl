@@ -1,0 +1,32 @@
+# Strategically allow access to certain topics on default port to
+# provide backward compatibility to devices that don't support
+# encrypted communications (yet).
+
+# Needed for setup
+topic write network/+/CONFIG-ME/subdev/+/status
+topic write network/+/CONFIG-ME/cmd/+
+topic read network/+/CONFIG-SELF/cmd/+
+# The following was erroneously used for "config-self" in some FW versions
+topic read network/+/CONFIG-ME/cmd/wired-start
+
+# Needed to avoid "red light"
+topic read master/network/status/icc
+
+# Needed for firmware update
+topic read network/+/FWUPD/cmd
+topic write network/+/FWUPD/status
+
+# Needed for connection status
+topic write network/+/DEVINFO
+topic read BH/+/status.parent_ip
+topic write network/+/BH/status
+topic write network/+/BH/perf
+topic write network/+/WLAN/subdev/+/status
+topic read  network/+/speed
+
+# Needed for offline detection
+topic write OFFLINE/+/status
+topic read CANCEL_WILL/+
+
+# Needed for secure_config
+topic read com.linksys.olympus/service/message

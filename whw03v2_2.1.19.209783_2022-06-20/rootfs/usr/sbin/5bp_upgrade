@@ -1,0 +1,197 @@
+#!/bin/sh
+#
+# fc_upgrade - Node Slave connection-time adjustment to smart_connect DB.
+#
+# When devices are set up via the accelerated "five button press"
+# (5BP), some operations must be deferred until later.  For example,
+# the Master node can't know Manufacturer, model, etc of the Slave
+# Nodes.  Later, when they connect the Smart Connect DB is updated
+# with this information using this script.
+#
+# At the same time, this can also correct certain malformed
+# authentication scenarios where all the Slaves setup via 5BP share
+# the same credentials.  While this causes no immediate functional
+# problem it is poor security.  This script also creates new
+# credentials for such units and schedules their dissemination via
+# secure_config.
+#
+# Copyright (c) 2018, Belkin Inc. All rights reserved.
+#
+
+PROG_NAME=$(basename $0)
+DEVINFO_PATH=${1}
+#SQL_FILE=/var/config/smartconnect/server.sql
+
+usage() {
+    echo "Upgrade smart_connect DB entry from devinfo"
+    echo "Usage:"
+    echo -e "\t$PROG_NAME {devinfo file}"
+}
+
+if [ -z "$DEVINFO_PATH" ]; then
+    echo "$PROG_NAME: Error: required argument missing"
+    usage
+    exit 1
+fi
+
+if [ ! -r "$DEVINFO_PATH" ]; then
+    echo "$PROG_NAME: Error: Cannot open '$DEVINFO_PATH'"
+    exit 1
+fi
+
+# Ensure that device is a supported infrastructure device.
+INFRA="$( jsonparse -f $DEVINFO_PATH data.infrastructure)"
+MODE="$(  jsonparse -f $DEVINFO_PATH data.mode)"
+if [ "$INFRA" != "true" ] || [ "$MODE" != "master" -a "$MODE" != "slave" ]; then
+    echo "$PROG_NAME: Ignoring non-infrastructure device"
+    exit 0
+fi
+
+MAC="$(jsonparse -f $DEVINFO_PATH data.base_mac)"
+if [ -z "$MAC" ];then
+    echo "$PROG_NAME: Error: Cannot determine MAC"
+    exit 1
+fi
+
+UUID="$(jsonparse -f $DEVINFO_PATH uuid)"
+if [ -z "$UUID" ];then
+    echo "$PROG_NAME: Error: Cannot determine UUID"
+    exit 1
+fi
+
+
+# Check for entry in device table with matching MAC.
+# $1: MAC
+dev_table_contains () {
+    local MAC="$(echo $1 | tr '[:lower:]' '[:upper:]')"
+    local RESULT
+    if [ $(smcdb -s -M "$MAC"|wc -l) -gt 1 ]; then
+        RESULT=0
+    else
+        RESULT=1
+    fi
+    return $RESULT
+}
+
+die () {
+    echo 1>&2 $*
+    exit 1
+}
+
+# $1: MAC
+add_authentication_for () {
+    local MAC="$1"
+    [ $DEBUG ] && echo "Creating authentication entry for device '$MAC'"
+    local RAW_NEW_CREDS="$(gen_srp_cred)"
+    local NEW_ID="$(      echo "$RAW_NEW_CREDS" | grep id       | cut -f2 -d:)"
+    local NEW_PASS="$(    echo "$RAW_NEW_CREDS" | grep pass     | cut -f2 -d:)"
+    local NEW_SALT="$(    echo "$RAW_NEW_CREDS" | grep salt     | cut -f2 -d:)"
+    local NEW_VERIFIER="$(echo "$RAW_NEW_CREDS" | grep verifier | cut -f2 -d:)"
+    if [ $DEBUG ]; then
+        echo "MAC:          $MAC"
+        echo "NEW_ID:       $NEW_ID"
+        echo "NEW_PASS:     $NEW_PASS"
+        echo "NEW_SALT:     $NEW_SALT"
+        echo "NEW_VERIFIER: $NEW_VERIFIER"
+    fi
+    if smcdb_auth -M "$MAC" \
+                  -L "$NEW_ID"   -P "$NEW_PASS" \
+                  -S "$NEW_SALT" -V "$NEW_VERIFIER"; then
+
+        # Now that the new credentials are in place, set them in
+        # syscfg so they will synchronize to the Node.
+        syscfg set ${UUID}::smart_connect::auth_login "$NEW_ID"
+        syscfg set ${UUID}::smart_connect::auth_pass "$NEW_PASS"
+        echo "New credentials for $MAC stored; will transfer next sync"
+    else
+        die "$PROG_NAME: Error creating authentication data for device '$MAC'"
+    fi
+}
+
+# $1: MAC
+# $2: column
+# $3: value
+DB_SET () {
+    local MAC="$1"
+    local COL="$2"
+    local VAL="$3"
+    smcdb -u -M "$MAC" $COL $VAL
+}
+
+# $1: MAC
+# $2: column param
+# $3: current value
+# $4: JSON field
+DB_UPDATE_IF_UNSET () {
+    local MAC="$1"
+    local COL_PARAM="$2"
+    local CUR_VAL="$3"
+    local DI_VAL="$(jsonparse -f $DEVINFO_PATH "$4")"
+    [ $DEBUG ] && echo "Value from DEVINFO: $DI_VAL"
+    if [ -z "$CUR_VAL" ]; then
+        [ $DEBUG ] && echo "$COL unset; initializing"
+        DB_SET "$MAC" "$COL_PARAM" "$DI_VAL"
+    else
+        [ $DEBUG ] && echo "$COL_PARAM already set to $CUR_VAL"
+    fi
+}
+
+# $1: MAC
+create_device_table_for () {
+    smcdb -n -M "$MAC"
+    if [ $DEBUG ]; then
+        echo "Device entry created for '$MAC':"
+        smcdb -s -M "$MAC"
+    fi
+}
+
+# $1: MAC
+update_device_table_for () {
+    local MAC="$1"
+    local DB_REC="$(smcdb -s -M "$MAC"|tail -1)"
+
+    if [ $DEBUG ]; then
+        echo "DB record for '$MAC':"
+        echo $DB_REC
+    fi
+    local DBREC_ID=$(        echo $DB_REC | cut -f1 -d, )
+    local DBREC_PIN=$(       echo $DB_REC | cut -f2 -d, )
+    local DBREC_UUID=$(      echo $DB_REC | cut -f3 -d, )
+    local DBREC_MACADDR=$(   echo $DB_REC | cut -f4 -d, )
+    local DBREC_SERIAL=$(    echo $DB_REC | cut -f5 -d, )
+    local DBREC_DEVICE_ID=$( echo $DB_REC | cut -f6 -d, )
+    local DBREC_INFRA=$(     echo $DB_REC | cut -f7 -d, )
+    local DBREC_SRPLOGIN=$(  echo $DB_REC | cut -f8 -d, )
+    local DBREC_SRPPASSWD=$( echo $DB_REC | cut -f9 -d, )
+
+    if [ $DEBUG ]; then
+        echo "DBREC_ID:        $DBREC_ID"
+        echo "DBREC_PIN:       $DBREC_PIN"
+        echo "DBREC_UUID:      $DBREC_UUID"
+        echo "DBREC_MACADDR:   $DBREC_MACADDR"
+        echo "DBREC_SERIAL:    $DBREC_SERIAL"
+        echo "DBREC_DEVICE_ID: $DBREC_DEVICE_ID"
+        echo "DBREC_INFRA:     $DBREC_INFRA"
+        echo "DBREC_SRPLOGIN:  $DBREC_SRPLOGIN"
+        echo "DBREC_SRPPASSWD: $DBREC_SRPPASSWD"
+    fi
+
+    DB_UPDATE_IF_UNSET "$MAC" "-U"   "$DBREC_UUID"   "uuid"
+    DB_UPDATE_IF_UNSET "$MAC" "-S"   "$DBREC_SERIAL" "data.serialNumber"
+    DB_UPDATE_IF_UNSET "$MAC" "-V"   ""              "data.manufacturer"
+    DB_UPDATE_IF_UNSET "$MAC" "-O"   ""              "data.model_number"
+    DB_UPDATE_IF_UNSET "$MAC" "-D"   ""              "data.description"
+    DB_SET             "$MAC" "-F"                   "true"
+}
+
+if dev_table_contains "$MAC"; then
+    [ $DEBUG ] && echo "Device '$MAC' present - updating"
+    # Data present, just update device fields
+    update_device_table_for "$MAC"
+else
+    [ $DEBUG ] && echo "Device '$MAC' not present - initializing"
+    # Need to create new device entry, autorization data & set up sync
+    create_device_table_for "$MAC"
+    add_authentication_for "$MAC"
+    update_device_table_for "$MAC"
+fi

@@ -1,0 +1,90 @@
+#!/bin/sh
+#
+# Copyright (c) 2017, Belkin Inc. All rights reserved.
+#
+# Send Wi-Fi survey data received from a client to the Master
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+REMOVE=0
+
+# filter stdin/stdout, converting any text to lower case
+tolower () {
+    tr '[A-Z]' '[a-z]'
+}
+
+usage() {
+    cat <<EOF
+$PROGNAME: Import client site-survey submitted from JNAP
+Usage: $PROGNAME {options} {FILE}
+Where {options} are one or more of:
+  -f{path}    JSON payload filebssid
+  -h          This help
+EOF
+}
+
+while getopts ":df:hr" opt;do
+    case $opt in
+        d)  DEBUG=1        ;;
+        f)  FILE=$OPTARG   ;;
+        r)  REMOVE=1       ;;
+        h) usage ; exit 0  ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+[ -z "$FILE" ] && debout "Reading from stdin..."
+PAYLOAD="$(cat $FILE)"
+SUB_PAYLOAD="$(echo $PAYLOAD | jsonparse discoveredAPs)"
+if [ -z "$SUB_PAYLOAD" ]; then
+    die "Aborting: No data to send"
+fi
+
+CLIENT="$(echo $PAYLOAD | jsonparse clientMACAddress | tolower )"
+validate CLIENT
+
+PUB_BSSID="$(echo $CLIENT | tr ":" "-")"
+validate PUB_BSSID
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   CLIENT   : $CLIENT"
+    echo "   PUB_BSSID: $PUB_BSSID"
+    echo "   UUID     : $UUID"
+fi
+
+# Build the topic, replacing the 1st wildcard with our UUID and the
+# 2nd with the client bssid
+PUB_TOPIC="$(omsg-conf -m WLAN_CLIENT_SURVEY | \
+              sed "s/+/${TOPIC_UUID}/"       | \
+              sed "s/+/${PUB_BSSID}/" )"
+
+mk_infra_payload                     \
+    -t status                        \
+    -u $UUID                         \
+    -s "client_bssid:$CLIENT"        \
+    -r "survey_results:$SUB_PAYLOAD" \
+    | publish "$PUB_TOPIC"
+
+STATUS=$?
+
+# Optionally remove original JSON data from JNAP
+if [ "$STATUS" -eq 0 -a -f "$FILE" -a "$REMOVE" -eq 1 ]; then
+    debout "Removing file '$FILE'"
+    rm "$FILE"
+fi

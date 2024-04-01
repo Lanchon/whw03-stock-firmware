@@ -1,0 +1,633 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Nodes Cached Firmware Update - Master
+#
+#-----------------------------------------------------------------------------------------------
+
+source /usr/sbin/update_nodes_defs
+
+PATH_MSG_ROOT="$(syscfg get subscriber::file_prefix)"
+PATH_BACKHAUL="$PATH_MSG_ROOT/BH"
+PATH_DEVINFO="$PATH_MSG_ROOT/DEVINFO"
+PATH_DEVICES="$PATH_MSG_ROOT/FWUPD"
+PATH_CACHE=/var/config/cache
+MAX_CACHE=8
+RESERVED_SPACE=49152
+CACHE_MIXED_VERSION=
+DEVICE_LIST=
+UPDATE_ID=
+UPDATE_REQUEST=
+UPDATE_TIMEOUT=56
+START_TIME=
+
+Usage()
+{
+    echo
+    echo "  Usage:"
+    echo "         $(basename $0) 1 ($FIELD_CHECK)" 
+    echo "         $(basename $0) 2 ($FIELD_UPDATE)" 
+    echo
+}
+
+UpdateDeviceList()
+{
+    if [ ! -d "$PATH_DEVICES" ]; then
+
+        Debug "no device list"
+        return 9
+    fi
+
+    DEVICE_LIST=$(ls "$PATH_DEVICES")
+}
+
+CheckUptime()
+{
+    cat /proc/uptime | cut -d'.' -f1
+}
+
+CheckSpace()
+{
+    Debug "checking space"
+
+    local FIRMWARE_URL=$1
+    local FIRMWARE_LENGTH=
+    local FREE_SPACE=
+    local CACHE_FILES=$(ls -tr $PATH_CACHE)
+    local COUNT_FILES=$(ls $PATH_CACHE | wc -l)    
+    local FILE=
+    
+    if [ -z "$FIRMWARE_URL" ]; then
+        return
+    fi
+
+    FIRMWARE_LENGTH=$(curl -sIf "$FIRMWARE_URL" | grep -i content-length | awk '$2 ~/[0-9]+/ {print $2}')
+
+    if [ -z "$FIRMWARE_LENGTH" ]; then
+        return
+    fi
+    
+    FIRMWARE_LENGTH=$(expr $FIRMWARE_LENGTH / 1024)
+    Debug "length: $FIRMWARE_LENGTH"
+
+    for FILE in $CACHE_FILES; do
+
+        FREE_SPACE=$(df -k "$PATH_CACHE" | awk '$4 ~/[0-9]+/ {print $4}')
+
+        if [ $COUNT_FILES -ge $MAX_CACHE ] || [ $FREE_SPACE -le $FIRMWARE_LENGTH ]; then
+
+            Debug "space:  $FREE_SPACE"
+            Debug "deleting: $FILE"
+            rm -f "$PATH_CACHE/$FILE"
+
+            COUNT_FILES=$(expr $COUNT_FILES - 1)
+        else
+            break;
+        fi
+    done
+
+    FREE_SPACE=$(df -k /var/config | awk '$4 ~/[0-9]+/ {print $4}')
+    Debug "space:  $FREE_SPACE"
+
+    if [ $FREE_SPACE -le $FIRMWARE_LENGTH ]; then
+        Debug "not enough space"
+        return 80
+    fi
+}
+
+DownloadFirmware()
+{
+    Debug "downloading: $(basename $1)"
+
+    fwupd -m 2 -D $1
+}
+
+UpdateDevice()
+{
+    local DEVICE=$1
+    local OPTION=$2
+
+    if [ "$UPDATE_REQUEST" == $FIELD_UPDATE ]; then
+
+        Debug "$DEVICE: notifying update"
+
+        if [ "$OPTION" ]; then
+               OPTION="-s $FIELD_OPTION:$OPTION"
+        fi
+
+        pub_fwup_update $DEVICE -s $FIELD_UPDATE_ID:$UPDATE_ID -s $FIELD_REQUEST:$FIELD_UPDATE $OPTION
+        sleep 1
+    else
+
+        Debug "$DEVICE: checking version"
+
+        pub_fwup_update $DEVICE -s $FIELD_UPDATE_ID:$UPDATE_ID -s $FIELD_REQUEST:$FIELD_CHECK
+        sleep 1
+    fi
+}
+
+UpdateWait()
+{
+    if [ "$UPDATE_REQUEST" != $FIELD_UPDATE ]; then
+        return
+    fi
+
+    local DEVICE=$1
+    
+    pub_fwup_update $DEVICE -s $FIELD_UPDATE_ID:$UPDATE_ID -s $FIELD_REQUEST:$FIELD_WAIT
+    sleep 1
+}
+
+CheckProgress()
+{
+    local FILE="$PATH_DEVICES/$1/$FIELD_PROGRESS"
+    local UPDATE=
+    local PROGRESS=
+    local NEW_PROGRESS="$2"
+    local CURRENT=$(CheckUptime)
+    local CHECKED=$CURRENT
+    local LATENCY=0
+
+    if [ -f $FILE ]; then
+
+        UPDATE=$(cat $FILE | cut -d':' -f1) 
+
+        if [ "$UPDATE" == "$UPDATE_ID" ]; then
+
+            CHECKED=$(cat $FILE | cut -d':' -f2) 
+            PROGRESS=$(cat $FILE | cut -d':' -f3) 
+
+            if [ "$PROGRESS" == "$NEW_PROGRESS" ]; then
+
+                LATENCY=$(expr $CURRENT - $CHECKED)
+            else
+                CHECKED=$CURRENT 
+            fi
+        else
+            rm $FILE
+        fi
+    fi
+
+    if [ $LATENCY -ge $UPDATE_TIMEOUT ]; then
+
+        Debug "$1: drop*"
+        return 1
+    fi
+
+    Debug "$1: $LATENCY*"
+
+    echo "$UPDATE_ID:$CHECKED:$NEW_PROGRESS" > $FILE
+}
+
+CheckStatus()
+{
+    local UPDATING=0
+    local DONE=0
+    local DROP=0
+    local ELAPSED=0
+
+    for DEVICE in $DEVICE_LIST; do
+
+        local STATUS="$PATH_DEVICES/$DEVICE/status"
+        local UPDATE=
+        local STATE=
+        local PROGRESS=
+
+        if [ -f $STATUS ]; then
+
+            UPDATE="$(jsonparse -f $STATUS data.$FIELD_UPDATE_ID)"
+            STATE="$(jsonparse -f $STATUS data.$FIELD_STATE)"
+            PROGRESS="$(jsonparse -f $STATUS data.$FIELD_PROGRESS)"
+        fi
+
+        if [ "$UPDATE" == "$UPDATE_ID" ] || [ "$UPDATE" == "$FIELD_SLAVE" ]; then
+
+            if [ "$STATE" == "$FIELD_DONE" ]; then
+
+                Debug "$DEVICE: $FIELD_DONE"
+
+                UpdateWait $DEVICE
+
+                DONE=$(expr $DONE + 1)
+            else
+                if CheckProgress $DEVICE "$PROGRESS"; then
+
+                    UPDATING=$(expr $UPDATING + 1)
+                else
+                    DROP=$(expr $DROP + 1)
+                fi
+            fi
+        else
+            if CheckProgress $DEVICE; then
+
+                UpdateDevice $DEVICE
+
+                UPDATING=$(expr $UPDATING + 1)
+            else
+                DROP=$(expr $DROP + 1)
+            fi
+        fi
+    done
+
+    ELAPSED=$(expr $(CheckUptime) - $START_TIME)
+
+    Debug "updating:$UPDATING done:$DONE drop:$DROP elapsed:$ELAPSED"
+
+    if [ $UPDATING == 0 ]; then
+        return 1
+    fi
+}
+
+CacheFirmware()
+{
+    local FIRMWARE_FILE=$(basename $1)
+    local CACHE_FILE=$PATH_CACHE/$FIRMWARE_FILE
+    local PROGRESS_FILE="$PATH_DEVICES/$2/$FIELD_PROGRESS"
+
+    if [ -f "$CACHE_FILE" ]; then
+        Debug "found: $CACHE_FILE"
+        return 
+    fi
+
+    if [ "$CACHE_MIXED_VERSION" == "$FIELD_CACHE" ]; then
+        
+        CheckSpace $1 && DownloadFirmware $1
+
+        if [ -f "$CACHE_FILE" ]; then
+
+            Debug "cache: $CACHE_FILE"
+            rm $PROGRESS_FILE
+            return
+        else
+            Debug
+            Debug "caching failed: $FIRMWARE_FILE"
+            Debug
+        fi
+    fi
+
+    return 9
+}
+
+CheckFirmware()
+{
+    for DEVICE in $DEVICE_LIST; do
+
+        local STATUS="$PATH_DEVICES/$DEVICE/status"
+
+        if [ ! -f $STATUS ]; then
+            continue
+        fi
+
+        local UPDATE="$(jsonparse -f $STATUS data.$FIELD_UPDATE_ID)"
+        local NEW_FIRMWARE="$(jsonparse -f $STATUS data.$FIELD_NEW_FIRMWARE)"
+
+        if [ "$UPDATE" != "$UPDATE_ID" ]; then
+            continue
+        fi
+
+        if [ "$UPDATE_REQUEST" == $FIELD_UPDATE ] && [ "$NEW_FIRMWARE" ]; then
+
+            Debug "$DEVICE: $NEW_FIRMWARE"
+
+            if CacheFirmware "$NEW_FIRMWARE" "$DEVICE"; then
+
+                UpdateDevice $DEVICE
+            else
+                rm -f $STATUS
+
+                UpdateDevice $DEVICE $FIELD_NO_CACHE
+            fi
+        fi
+    done
+}
+
+CheckConfiguration()
+{
+    local LIST=
+    local DEVICE=
+    local FILE=
+    local CIP=
+    local PIP=
+
+    if [ ! -d "$PATH_BACKHAUL" ]; then
+        return 80
+    fi
+
+    LIST=$(ls "$PATH_BACKHAUL")
+
+    for DEVICE in $LIST; do
+
+        FILE="$PATH_BACKHAUL/$DEVICE/status"
+
+        if [ -f "$FILE" ]; then
+
+            CIP="$(jsonparse -f $FILE data.ip)"
+            PIP="$(jsonparse -f $FILE data.type)"
+
+            FILE="$PATH_BACKHAUL/$DEVICE/status.parent_ip"
+
+            if [ -f "$FILE" ]; then
+                PIP="$(cat $FILE)"
+            fi
+
+            Debug "$DEVICE  $CIP --> $PIP"
+        fi
+    done
+
+    START_TIME=$(CheckUptime)
+
+    Debug
+}
+
+UpdateMaster()
+{
+    sysevent set $SYS_UPDATE_STATE started
+
+    local VERSION="$(syscfg get $CFG_FIRMWARE_VERSION)"
+    local NEW_VERSION=
+    local STATUS_DETAILS=
+    local FIRMWARE_URL=
+
+    Debug "$VERSION"
+    Debug
+
+    if [ "$UPDATE_REQUEST" == $FIELD_UPDATE ]; then
+
+        if [ ! -d $PATH_DOWNLOADS ]; then
+            mkdir $PATH_DOWNLOADS
+        fi
+
+        if [ ! -d $PATH_CACHE ]; then
+            mkdir $PATH_CACHE
+        fi
+
+        FIRMWARE_URL="$(sysevent get $SYS_NEW_FIRMWARE_URL)"
+        
+        if [ -z "$FIRMWARE_URL" ]; then
+
+            fwupd -m 1
+            FIRMWARE_URL="$(sysevent get $SYS_NEW_FIRMWARE_URL)"
+        fi
+
+        CheckSpace "$FIRMWARE_URL"
+        Debug
+
+        fwupd -m 2 -C
+
+        STATUS_DETAILS=$(syscfg get $CFG_NEW_FIRMWARE_STATUS_DETAILS)
+       
+        if [ "$STATUS_DETAILS" ]; then
+
+            Debug $STATUS_DETAILS
+            Debug "done"
+            Debug
+
+            sysevent set $SYS_UPDATE_STATE
+            return 80
+        fi
+    else
+
+        rm -rf $PATH_DEVICES
+
+        UpdateDevice $FIELD_MASTER
+
+        fwupd -m 1
+
+        NEW_VERSION="$(syscfg get $CFG_NEW_FIRMWARE_VERSION)"
+        STATUS_DETAILS=$(syscfg get $CFG_NEW_FIRMWARE_STATUS_DETAILS)
+
+        if [ -z "$NEW_VERSION" ] && [ -z "$STATUS_DETAILS" ]; then
+            NEW_VERSION="up to date"
+        fi
+
+        Debug
+        Debug "new version: $NEW_VERSION $STATUS_DETAILS"
+    fi
+}   
+
+CleanUpSpace()
+{
+    if [ ! -d $PATH_CACHE ];then
+        return
+    fi
+
+    Debug "cleaning up space"
+
+    local CACHE_FILES=$(ls -tr $PATH_CACHE)
+    local FILE=
+    local FREE_SPACE=
+
+    for FILE in $CACHE_FILES; do
+
+        FREE_SPACE=$(df -k "$PATH_CACHE" | awk '$4 ~/[0-9]+/ {print $4}')
+
+        if [ $FREE_SPACE -le $RESERVED_SPACE ]; then
+
+            Debug "space:  $FREE_SPACE"
+            Debug "deleting: $FILE"
+            rm -f "$PATH_CACHE/$FILE"
+        else
+            break;
+        fi
+    done
+}
+
+Reboot()
+{
+    Debug "done"
+    Debug
+
+    if [ "$(sysevent get $SYS_UPDATE_STATE)" != $FIELD_DONE ]; then
+
+        sysevent set $SYS_UPDATE_STATE
+        sysevent set $SYS_STATE
+        return
+    fi
+
+    Debug
+    Debug "reboot"
+    Debug
+
+    sysevent set $SYS_UPDATE_STATE $FIELD_REBOOT
+    sysevent set $SYS_STATE $SYS_STATE_REBOOT
+
+    rm -f $PATH_DOWNLOADS/*
+
+    switch_boot_image
+}
+
+UpdateStatus()
+{
+    local STATUS=$(sysevent get $SYS_SLAVE_STATUS)
+    local DEVICE=$(echo $STATUS | cut -d'/' -f5)
+
+    Debug "$DEVICE"
+
+    if [ ! -f $STATUS ]; then
+        return
+    fi
+
+    local UPDATE_ID=$(sysevent get $SYS_UPDATE_ID)
+    local UPDATE="$(jsonparse -f $STATUS data.$FIELD_UPDATE_ID)"
+    local STATE="$(jsonparse -f $STATUS data.$FIELD_STATE)"
+    local PROGRESS="$(jsonparse -f $STATUS data.$FIELD_PROGRESS)"
+    local NEW_VERSION="$(jsonparse -f $STATUS data.$CFG_NEW_FIRMWARE_VERSION)"
+    local STATUS_DETAILS="$(jsonparse -f $STATUS data.$CFG_NEW_FIRMWARE_STATUS_DETAILS)"
+
+    if [ "$UPDATE" != "$UPDATE_ID" ] && [ "$UPDATE" != "$FIELD_SLAVE" ]; then
+        return
+    fi
+
+    if [ "$STATE" == "$FIELD_DONE" ]; then
+
+        if [ -z "$NEW_VERSION" ] && [ -z "$STATUS_DETAILS" ]; then
+            NEW_VERSION="up to date"
+        fi
+    fi
+
+    Debug "$DEVICE: $PROGRESS  $NEW_VERSION $STATUS_DETAILS"
+}
+
+SetOffline()
+{
+    local OFFLINE=$(sysevent get $SYS_SLAVE_OFFLINE)
+    local DEVICE=$(echo $OFFLINE | cut -d'/' -f5)
+    local FILE="$PATH_DEVICES/$DEVICE/$FIELD_PROGRESS"
+    local UPDATE=$(sysevent get $SYS_UPDATE_ID)
+
+    echo "$UPDATE:$UPDATE_TIMEOUT" > $FILE
+
+    Debug "$DEVICE: offline"
+}
+
+CheckBackhaulStatus()
+{
+    local BACKHAUL_STATUS="$(sysevent get $SYS_BACKHAUL_STATUS_DATA)"
+    local DEVICE=$(echo $BACKHAUL_STATUS | cut -d'/' -f5)
+    local CIP="$(jsonparse -f $BACKHAUL_STATUS data.ip)"
+    local AP="$(jsonparse -f $BACKHAUL_STATUS data.ap_bssid)"
+    local STATE="$(jsonparse -f $BACKHAUL_STATUS data.state)"
+    local PIP="$(jsonparse -f $BACKHAUL_STATUS data.type)"
+    local PARENT=
+
+    if [ "$AP" ]; then
+
+        PARENT="$(grep -iw $AP $PATH_DEVINFO/* | cut -d':' -f1)"
+
+        if [ -f "$PARENT" ]; then
+            PIP="$(jsonparse -f $PARENT data.ip)"
+        fi
+    fi
+        
+    Debug
+    Debug "$DEVICE  $CIP ==> $PIP  $STATE"
+    Debug
+}
+
+CheckConnection()
+{
+    if [ ! -d "$PATH_BACKHAUL" ]; then
+
+        Debug "no list"
+        return 80
+    fi
+}
+
+StartUpdate()
+{
+    if [ "$UPDATE_REQUEST" == $FIELD_UPDATE ]; then
+
+        rm -rf $PATH_DEVICES
+
+        UpdateDevice $FIELD_MASTER
+
+        sleep 12
+    fi
+}
+
+#-----------------------------------------------------------------------------------------------
+
+UPDATE_REQUEST=$1
+
+if [ "$(syscfg get smart_mode::mode)" != "2" ]; then
+    exit 1
+fi
+
+case "$UPDATE_REQUEST" in
+
+    $FIELD_CHECK | $FIELD_UPDATE)
+        ;;
+    1)
+        UPDATE_REQUEST=$FIELD_CHECK
+        ;;
+    2)
+        UPDATE_REQUEST=$FIELD_UPDATE
+        ;;
+
+    $SYS_SLAVE_STATUS)
+
+        UpdateStatus
+        exit
+        ;;
+    $SYS_SLAVE_OFFLINE)
+
+        SetOffline
+        exit
+        ;;
+    $SYS_BACKHAUL_STATUS_DATA)
+
+        CheckBackhaulStatus
+        exit
+        ;;
+    *)
+        Usage
+        exit
+        ;;
+esac
+
+if pidof fwupd > /dev/null || [ "$(sysevent get $SYS_UPDATE_STATE)" ]; then
+
+    Debug "updating in progress..."
+    exit
+fi
+
+UPDATE_ID="$(date +%y%m%d%H%M%S)"
+sysevent set $SYS_UPDATE_ID $UPDATE_ID
+
+Debug
+Debug "updating master node -------------------------------------------------"
+Debug
+
+if ! UpdateMaster; then
+    exit 80
+fi
+
+Debug
+Debug "updating child nodes -------------------------------------------------"
+Debug
+
+CheckConfiguration
+
+if CheckConnection; then
+
+    StartUpdate   
+
+    while true; do
+
+        if UpdateDeviceList && CheckStatus; then
+
+            CheckFirmware
+            sleep 5 
+        else
+            break
+        fi
+
+    done
+fi
+
+CleanUpSpace
+
+Reboot
+
+#-----------------------------------------------------------------------------------------------

@@ -1,0 +1,79 @@
+#!/usr/bin/lua
+
+--
+-- 2018 Belkin International, Inc. and/or its affiliates. All rights reserved.
+--
+-- $Author$
+-- $DateTime$
+-- $Id$
+--
+-- shield_backupconfig.lua - script to handle shield configuration backup to the cloud
+-- 
+
+local sysctx = require('libsysctxlua')
+local platform = require('platform')
+local cloud = require('cloud')
+local device = require('device')
+
+local PROG_NAME = string.match(arg[0], ".*/(.*)")
+
+local function log(level, message)
+    os.execute(('TZ=UTC logger -s -t %s "%s: %s"'):format(PROG_NAME, level, message))
+end
+
+local function backupShieldConfig()
+    local err
+    local sc = sysctx.new()
+    sc:readlock()
+
+    -- Read the configuration data from file
+    local cfgPath = sc:get_shield_tempconfigpath()
+    local file = assert(io.open(cfgPath))
+    local configData = file:read('*a')
+    file:close()
+
+    local host = device.getCloudHost(sc)
+    local token = device.getLinksysToken(sc)
+    local verifyHost = device.getVerifyCloudHost(sc)
+    local configKey = {
+        {
+            name = 'formatVersion',
+            value = sc:get_shield_configversion()
+        }
+    }
+    sc:rollback()
+
+    -- Get the current backup configuration info (if any) from the cloud
+    -- and store/update the configuration data in the cloud
+    local err, configInfo = require('networksecurity').getBackupConfigurationInfo(sc)
+    if not err or (err == 'ErrorConfigurationNotFound') then
+        err = cloud.storeConfiguration(host, token, configInfo.configId, nil, 'NETWORK_SECURITY', configKey, configData, verify)
+    end
+
+    -- If an error occurred then schedule a cron job to retry every minute
+    local cronFile = '/etc/cron/cron.everyminute/retry_shield_backup.sh'
+    if err and not require('lfs').attributes(cronFile) then
+        file = assert(io.open(cronFile, 'w'))
+        -- Randomize the cron job by sleeping for a random period within a minute
+        math.randomseed(os.time())
+        file:write(('#!/bin/sh\nsleep %d && %s'):format(math.random(60), arg[0]))
+        file:close()
+        os.execute('chmod +x '..cronFile)
+    end
+    assert(not err, err)
+
+    -- The backup succeeded, so remove the cron file
+    os.remove(cronFile)
+end
+
+-------------------------------------------------
+-- Main Entry
+-------------------------------------------------
+platform.registerLoggingCallback(log)
+
+local success, err = pcall(backupShieldConfig)
+if success then
+    log(platform.LOG_INFO, 'Backup successful.')
+else
+    log(platform.LOG_ERROR, ('Backup failed (%s).'):format(err))
+end

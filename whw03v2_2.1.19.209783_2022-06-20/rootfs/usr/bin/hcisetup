@@ -1,0 +1,39 @@
+#!/bin/sh
+
+CMDNAME=hcisetup
+
+setup_hci_device() {
+    if [ "$1" == "master" ]; then
+        # Master mode
+        if hciconfig hci0 reset > /dev/null 2>&1; then
+            if hciconfig hci0 noleadv > /dev/null 2>&1; then
+                echo "$CMDNAME: Disabled LE advertising"
+            else
+                echo "$CMDNAME: Failed to disable LE advertising"
+            fi
+            hciconfig hci0 name Linksys > /dev/null 2>&1;
+        else
+            echo "$CMDNAME: Failed to reset HCI device"
+        fi
+    else
+        # Unconfigured or Slave mode
+        if hciconfig hci0 up > /dev/null 2>&1; then
+            hciconfig hci0 noleadv > /dev/null 2>&1
+            hciconfig hci0 noscan > /dev/null 2>&1
+            if hciconfig hci0 leadv 0 > /dev/null 2>&1; then
+                    echo "$CMDNAME: Enabled LE advertising"
+            else
+                    echo "$CMDNAME: Failed to enable LE advertising"
+            fi
+            hciconfig hci0 name Linksys > /dev/null 2>&1
+        else
+            echo "$CMDNAME: Failed to open and initialize HCI device"
+        fi
+	fi
+}
+
+setup_hci_device_reset() {
+	hciconfig hci0 reset
+}
+
+setup_hci_device $1

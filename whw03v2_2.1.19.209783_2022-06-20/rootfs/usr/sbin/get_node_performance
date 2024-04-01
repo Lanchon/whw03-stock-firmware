@@ -1,0 +1,53 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Get connected nodes' performance data (Layer2 and Layer3)
+
+PROG_NAME="$(basename $0)"
+if [ "$#" -lt 1 ]; then
+    cat <<EOF
+$PROG_NAME: Error - missing argument
+Usage: $PROG_NAME {Slave UUID} {layer2, or layer3}
+EOF
+    exit 1
+fi
+
+
+toupper() {
+    echo "$1" | tr '[a-z]' '[A-Z]'
+}
+
+SLAVE_UUID="$(toupper $1)"
+LEVEL=$2
+BH_DIR="/tmp/msg/BH/${SLAVE_UUID}"
+BH_STATUS="/tmp/msg/BH/${SLAVE_UUID}/status"
+BH_STATUS_PERF="/tmp/msg/BH/${SLAVE_UUID}/status.performance"
+
+#return the information when both are available, or else the JNAP goes error
+if [ -d "$BH_DIR" ] && [ -s "$BH_STATUS" ] && [ -s "$BH_STATUS_PERF" ] ; then
+	SLAVELIST=""
+	check_slave_online list >/dev/null
+	if [ $? -eq 0 ];then
+	  SLAVELIST=`check_slave_online list`
+	fi
+	echo $SLAVELIST | grep "$SLAVE_UUID" > /dev/null
+	if [ $? -ne 0 ] ;then
+		#not a online slave
+		exit 1
+	fi
+
+    if [ "$LEVEL" == "layer2" ]; then
+        layer2_info=`cat $BH_STATUS`
+        echo "$layer2_info"
+    elif [ "$LEVEL" == "layer3" ]; then
+        layer3_info=`cat $BH_STATUS_PERF`
+        echo "$layer3_info"
+	else
+    	exit 1
+	fi
+else
+    echo "$PROG_NAME Error: $BH_DIR does not exist" > /dev/console
+    exit 1
+fi
+exit 0

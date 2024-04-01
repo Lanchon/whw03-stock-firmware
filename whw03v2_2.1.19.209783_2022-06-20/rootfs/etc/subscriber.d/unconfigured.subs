@@ -1,0 +1,27 @@
+-- Subscriber Unconfigured mode Node subscriptions file  -*- lua -*-
+-- Single-line comments use "--" prefix
+--[[ Multi-line comments
+   are delimited like this  --]]
+-- Entries can span lines.  Use whitespace & alignment to aid
+-- readability.
+
+-- configure-start-wired-setup
+{
+   name  = "configure_self",
+   topic = "network/+/CONFIG-ME/cmd/wired-start",
+   event = "smart_connect::configure_wired_setup-start"
+},
+
+-- pre-setup.  Payload is simply "true" or "false".
+{
+   name  = "pre_setup",
+   topic = "network/%uuid/CONFIG-ME/cmd/SetPreSetup",
+   event = "setup::presetup"
+},
+
+-- plc-start-setup
+{
+   name  = "plc_setup-start",
+   topic = "network/+/PLC/cmd/setup-start",
+   event = "plc::setup-start"
+},

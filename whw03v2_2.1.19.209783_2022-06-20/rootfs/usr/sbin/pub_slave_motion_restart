@@ -1,0 +1,35 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish stdin to a specified topic
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PROGNAME=$(basename $0)
+
+MODE=$(syscfg get smart_mode::mode)
+UNCONFIGURED_MODE=0
+MASTER_MODE=2
+SLAVE_MODE=1
+PUB_TOPIC="motion/slave_restart"
+
+if [ "$MODE" != "$MASTER_MODE" ];then
+	echo "$PROG_NAME: not in master mode,exit"
+	exit
+fi
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   STATE    : $STATE"
+fi
+
+[ $DEBUG ] && echo "${PROG_NAME}: publishing motion restart to slaves"
+
+echo "" | publish "$PUB_TOPIC"

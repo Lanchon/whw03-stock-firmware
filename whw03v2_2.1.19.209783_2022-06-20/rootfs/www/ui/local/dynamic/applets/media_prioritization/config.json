@@ -1,0 +1,26 @@
+{
+    "name": "{{dynamic-applets-media_prioritization.6e30563b}}",
+    "description": "{{dynamic-applets-media_prioritization.08d9a17e}}",
+    "categoryName": "{{dynamic-applets-media_prioritization.c2134465}}",
+    "widgets": [{
+        "appletId": "9BDB14C9-C328-40ED-89A9-A3A822B8B5D2",
+        "widgetId": "BBB6425B-D3A1-45D6-8A68-B80DC37502A6",
+        "url": "/ui/1.0.99.209783/dynamic/applets/media_prioritization/widget.html",
+        "title": "{{dynamic-applets-media_prioritization.6e30563b}}",
+        "fixed": false,
+        "defaultOrder": 8,
+        "wide": false,
+        "iframe": false,
+        "widgetIcon": "widget-icon.png"
+    }],
+    "serviceSettingsOverrides": [{
+        "service": "/jnap/gamingprioritization/GamingPrioritization",
+        "settings": {
+            "name": "{{dynamic-applets-media_prioritization.e64d9c19}}"
+        }
+    },
+    {
+        "service": "/jnap/lvvp/LVVP",
+        "settings": {}
+    }]
+}

@@ -1,0 +1,171 @@
+#!/bin/sh
+#
+# Copyright (c) 2018, Belkin Inc. All rights reserved.
+#
+# Send Wi-Fi survey data received from a client to the Master
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+DFC_NUM_BEACONS=3
+DFC_BEACON_WAIT=30
+
+PROG_NAME="$(basename $0)"
+
+usage() {
+    cat <<EOF
+$PROGNAME: Send Wi-Fi survey data received from a client to the Master
+Usage: $PROGNAME {options} {FILE}
+Where {options} are one or more of:
+  -c{bssid}   Client of interest
+  -n          Dry-run; don't send any data
+  -b{num}     Number of beacon scans to perform (default: $DFC_NUM_BEACONS)
+  -w{secs}    Time to pause between beacon scans (default: $DFC_BEACON_WAIT)
+  -h          This help
+EOF
+}
+
+NUM_BEACONS=$DFC_NUM_BEACONS
+BEACON_WAIT=$DFC_BEACON_WAIT
+AVG_OPTS=
+
+# Send arguments to stderr
+errout () {
+    echo "$*" 1>&2
+}
+
+# Send arguments to stderr if DEBUG is set
+debout () {
+    [ "$DEBUG" ] && errout "$*"
+}
+
+# $1: BSSID
+# $2: RCPI
+# $3: channel
+gen_subobject () {
+    if [ -n "$1" -a -n "$2" -a -n "$3" ]; then
+        jsongen -s "macAddress:$1" -r "rcpi:$2" -r "channel:$3"
+    fi
+}
+
+
+# Simple awk script that outputs shell variable assignment statements
+AWK_PROG='{ \
+   printf( "MAC=\"%2s:%2s:%2s:%2s:%2s:%2s\"; CHANNEL=%d; SIGNAL=%d", \
+           $1, $2, $3, $4, $5, $6, $7, $8 ); \
+}'
+
+# Function generating list of objects that will be part of an array
+# $1: Optional PREFIX
+gen_object_sublist () {
+    local PREFIX="$1"
+    /usr/sbin/wifi_req_bcnrpt -c $CLIENT | sed -n '2,$p' | while read line; do
+        debout "Processing line '$line'"
+        eval "$( echo "$line" | awk "$AWK_PROG" )"
+        local OUTPUT="$(gen_subobject $MAC $SIGNAL $CHANNEL)"
+        #debout "gen_object_sublist: line '$line' => '$OUTPUT'"
+        [ -n "$OUTPUT" ] && echo "${PREFIX}${OUTPUT}"
+        PREFIX=", "
+    done
+}
+
+# Function generating list of objects that will be part of an array
+# $1: Count (default 1 if absent)
+# $2: inter-scan delay
+gen_object_list () {
+    local COUNT=${1:-1}
+    local WAIT=${2:-30}
+    local PREFIX=""
+    local PAYLOAD=""
+    for i in $(seq 1 $COUNT);do
+        debout "Beacon report iteration $i of $COUNT (PREFIX: $PREFIX):"
+        gen_object_sublist $PREFIX
+        PREFIX=", "
+        if [ $COUNT -gt 1 -a $i -lt $COUNT ];then
+            debout "Pausing for $WAIT seconds between beacon scans"
+            sleep $WAIT
+        fi
+    done
+}
+
+while getopts ":b:dc:nhw:" opt;do
+    case $opt in
+        d)  DEBUG=1 ; AVG_OPTS="-d" ;;
+        c)  CLIENT=$OPTARG ;;
+        b)  NUM_BEACONS=$OPTARG ;;
+        w)  BEACON_WAIT=$OPTARG ;;
+        h) usage ; exit 0 ;;
+        n)  FAKE="echo " ;;
+        \?)
+            echo "Invalid option: -$OPTARG" >&2
+            usage
+            exit 1
+            ;;
+        :)
+            echo "Option -${OPTARG} needs an argument." >&2
+            usage
+            exit 1
+            ;;
+    esac
+done
+shift $((OPTIND-1))
+
+if [ -z "$CLIENT" ]; then
+    errout "Missing required client parameter"
+    usage
+    exit 1
+fi
+
+LOCKFILE=/var/lock/${PROG_NAME}.${CLIENT}
+
+# Handle fatal error where an instance of this script is already running
+LOCKOUT () {
+    echo "$0 already running; exit" 1>&2
+    exit 1
+}
+
+# Prevent multiple simultaneous execution
+(
+    flock -n 9 || LOCKOUT
+
+    PUB_BSSID="$(echo $CLIENT | tr ":" "-")"
+    # Build the topic, replacing the 1st wildcard with our UUID and the
+    # 2nd with the client bssid
+    PUB_TOPIC="$(omsg-conf -m WLAN_CLIENT_SURVEY | \
+              sed "s/+/${TOPIC_UUID}/" | \
+              sed "s/+/${PUB_BSSID}/" )"
+
+    if [ $DEBUG ];then
+        errout "Options:"
+        errout "   BIND_ADDR:   $BIND_ADDR"
+        errout "   HOST_PORT:   $HOST_PORT"
+        errout "   HOST_ADDR:   $HOST_ADDR"
+        errout "   TOPIC:       $PUB_TOPIC"
+        errout "   CLIENT:      $CLIENT"
+        errout "   UUID:        $UUID"
+        errout "   NUM_BEACONS: $NUM_BEACONS"
+        errout "   BEACON_WAIT: $BEACON_WAIT"
+    fi
+
+
+    PAYLOAD="$(gen_object_list ${NUM_BEACONS} ${BEACON_WAIT} | avg_bcnrpts ${AVG_OPTS})"
+
+    if [ $DEBUG ];then
+        errout "Payload (raw):"
+        errout $PAYLOAD
+        errout "Payload (pretty):"
+        errout "$(echo $PAYLOAD | jpp)"
+    fi
+
+    if [ "$FAKE" ]; then
+        debout "Not Sending"
+        exit 0
+    fi
+
+    mk_infra_payload                  \
+        -t status                     \
+        -u $UUID                      \
+        -s "client_bssid:$CLIENT"     \
+        -r "survey_results:$PAYLOAD"  \
+        | publish "$PUB_TOPIC"
+) 9>$LOCKFILE

@@ -1,0 +1,26 @@
+#!/usr/bin/lua
+
+NET  = require 'nodes.tess.network'
+JSON = require 'libhdkjsonlua'
+
+if arg[1] == '-p' then
+   out = io.popen( "jpp", "w" )
+else
+   out = io.stdout
+end
+
+if NET then
+   net = NET.snapshot()
+   if net then
+      steering_data = net:get_client_steering_data()
+      if steering_data then
+         out:write( JSON.stringify( steering_data ))
+      else
+         error "No client steering data"
+      end
+   else
+      error "Failed to snapshot network"
+   end
+else
+   error "Cannot load tesseract.network module"
+end

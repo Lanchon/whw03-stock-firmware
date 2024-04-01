@@ -1,0 +1,278 @@
+<!doctype html>
+<html>
+    <head>
+        <title>Firmware Update</title>
+        <meta http-equiv="pragma" content="no-cache">
+        <meta http-equiv="cache-control" content="no-cache">
+        <style type="text/css">
+/*** Reset styles for cross-browser consistency ***/
+
+html, body, div, span, applet, object, iframe,
+h1, h2, h3, h4, h5, h6, p, blockquote, pre,
+a, abbr, acronym, address, big, cite, code,
+del, dfn, em, font, img, ins, kbd, q, s, samp,
+small, strike, strong, sub, sup, tt, var,
+b, u, i, center,
+dl, dt, dd, ol, ul, li,
+fieldset, form, label, legend,
+table, caption, tbody, tfoot, thead, tr, th, td {
+    margin: 0;
+    padding: 0;
+    border: 0;
+    outline: 0;
+    font-size: 100%;
+    vertical-align: baseline;
+    background: transparent;
+}
+body {
+    line-height: 1;
+}
+ol, ul {
+    list-style: none;
+}
+blockquote, q {
+    quotes: none;
+}
+blockquote:before, blockquote:after,
+    q:before, q:after {
+    content: '';
+    content: none;
+}
+
+/* remember to define focus styles! */
+:focus {
+    outline: 0;
+}
+
+/* remember to highlight inserts somehow! */
+ins {
+    text-decoration: none;
+}
+del {
+    text-decoration: line-through;
+}
+
+/* tables still need 'cellspacing="0"' in the markup */
+table {
+    border-collapse: collapse;
+    border-spacing: 0;
+}
+
+/*** Custom document styles ***/
+
+body {
+    margin: 10pt;
+    color: black;
+}
+body, td, th {
+    background-color: white;
+    font-family: "Helvetica","Arial",sans-serif;
+    font-size: 9pt;
+    line-height: 1.2em;
+}
+a:link {
+    color: #004B91;
+    text-decoration: none;
+}
+a:visited {
+    color: #004B91;
+    text-decoration: none;
+}
+a:active {
+    color: #004B91;
+    text-decoration: none;
+}
+a:hover {
+    color: #004B91;
+    text-decoration: underline;
+}
+h1, h2, h3, h4, h5, h6 {
+    font-weight: bold;
+    padding: 0.5em 0;
+}
+h1 {
+    font-size: 16pt;
+}
+h2 {
+    font-size: 14pt;
+}
+h3 {
+    font-size: 12pt;
+    margin-top: 1em;
+}
+h4 {
+    font-size: 10pt;
+    margin-top: 1em;
+}
+h5 {
+    font-size: 9pt;
+}
+h6 {
+    font-size: 8pt;
+}
+th, td {
+    padding: 0.25em;
+    margin: 0;
+    text-align: left;
+    vertical-align: baseline;
+}
+.edit {
+    width:500px;
+}
+
+#firmwareImage {
+    width: 400px;
+}
+
+#hintText {
+    font-weight: bold;
+}
+
+        </style>
+    </head>
+    <body>
+        <h1>Firmware Update</h1>
+        <form id="firmwareUpdate" method="post" enctype="multipart/form-data" action="/jcgi/">
+          <input type="hidden" name="X-JNAP-Action" value="updatefirmware">
+          <input type="hidden" name="X-JNAP-Authorization" value="Basic YWRtaW46YWRtaW4=">
+
+          Admin password: <input id="adminPass" type="text" size="20" value="admin">
+          <br>
+          <br>
+          <div id="hintBlock" style="display:none;">
+            Hint: <label id="hintText"></label>
+            <br>
+            <br>
+          </div>
+
+          <input id="firmwareImage" name="upload" type="file" size="100">
+          <input id="clearFirmwareImage" type="button" value="Clear">
+          <br>
+          <br>
+          <input id="uploadFirmware" type="submit" disabled="disabled" value="Update">
+        </form>
+        <script src="/ui/static/js/lib/jquery.js" type="text/javascript"></script>
+        <script type="text/javascript">
+
+        function utf8Encode(input) {
+            var output = "";
+            input = input.replace(/\r\n/g,"\n");
+            for (var n = 0; n < input.length; n++) {
+                var c = input.charCodeAt(n);
+                if (c < 128) {
+                    output += String.fromCharCode(c);
+                }
+                else if((c > 127) && (c < 2048)) {
+                    output += String.fromCharCode((c >> 6) | 192);
+                    output += String.fromCharCode((c & 63) | 128);
+                }
+                else {
+                    output += String.fromCharCode((c >> 12) | 224);
+                    output += String.fromCharCode(((c >> 6) & 63) | 128);
+                    output += String.fromCharCode((c & 63) | 128);
+                }
+            }
+            return output;
+        }
+
+        function base64Encode(input) {
+            var keyStr = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+            var output = "";
+            var chr1, chr2, chr3, enc1, enc2, enc3, enc4;
+            var i = 0;
+            input = utf8Encode(input);
+            while (i < input.length) {
+                chr1 = input.charCodeAt(i++);
+                chr2 = input.charCodeAt(i++);
+                chr3 = input.charCodeAt(i++);
+                enc1 = chr1 >> 2;
+                enc2 = ((chr1 & 3) << 4) | (chr2 >> 4);
+                enc3 = ((chr2 & 15) << 2) | (chr3 >> 6);
+                enc4 = chr3 & 63;
+                if (isNaN(chr2)) {
+                    enc3 = enc4 = 64;
+                } else if (isNaN(chr3)) {
+                    enc4 = 64;
+                }
+                output += keyStr.charAt(enc1) + keyStr.charAt(enc2) + keyStr.charAt(enc3) + keyStr.charAt(enc4);
+            }
+            return output;
+        }
+
+        function setAdminPwHint() {
+            callAction('http://linksys.com/jnap/core/GetAdminPasswordHint', {},
+                function(succeeded, response) {
+                    if (succeeded) {
+                        if (response.output.passwordHint) {
+                            $('#hintText').text(response.output.passwordHint);
+
+                            $('#hintBlock').show();
+                        }
+                    }
+                });
+        }
+
+        function getEncodedPw(pw) {
+            return 'Basic ' + base64Encode('admin:' + pw);
+        }
+
+        function setAdminPwHeader() {
+            var pw = getEncodedPw($('#adminPass').val());
+            $('input[name="X-JNAP-Authorization"]').val(pw);
+        }
+
+        function callAction(actionURI, request, handler, password) {
+            var headers = { 'X-JNAP-Action': actionURI };
+
+            if (password) {
+                headers['X-JNAP-Authorization'] = getEncodedPw(password);
+            }
+
+            $.ajax({
+                type: 'POST',
+                url: '/JNAP/',
+                headers: headers,
+                contentType: 'application/json;charset=utf-8',
+                dataType: 'json',
+                data: JSON.stringify(request),
+                error: function(xhr, status) { handler(false, status); },
+                success: function(response) { handler(true, response); }
+            });
+        }
+
+        $(document).ready(function() {
+
+            callAction('http://linksys.com/jnap/core/GetDeviceInfo', {},
+                function(succeeded, response) {
+                    if (succeeded) {
+                        if (response.output.services.indexOf('http://linksys.com/jnap/core/Core3') !== -1) {
+                            setAdminPwHint();
+                        }
+                    }
+                });
+
+            $('#firmwareImage').change(function() {
+                if ($(this).val()) {
+                    $('#uploadFirmware').removeAttr('disabled');
+                }
+                else {
+                    $('#uploadFirmware').attr('disabled', 'disabled');
+                }
+            });
+
+            $('#adminPass').change(function() {
+                setAdminPwHeader();
+            });
+
+            $('#clearFirmwareImage').click(function() {
+                $('#firmwareImage').val('');
+                $('#firmwareImage').change();
+            });
+
+            $('#firmwareImage').change();
+
+        });
+
+        </script>
+    </body>
+</html>

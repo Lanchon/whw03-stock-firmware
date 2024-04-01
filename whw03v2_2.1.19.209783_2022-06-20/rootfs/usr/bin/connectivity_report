@@ -1,0 +1,171 @@
+#!/bin/sh
+#
+# Generate a simple connectivity report on based on omsg cached message files.
+#
+
+PROG_NAME=$(basename $0)
+DEFAULT_SLEEP_TIME=30
+VERSION="0.2.1"
+SHOW_DISCON=0
+SLEEP_TIME=$DEFAULT_SLEEP_TIME
+WLAN_NET_TYPE="WLAN"
+ETH_NET_TYPE="ETH"
+ALL_NET_TYPE="ALL"
+DEFAULT_NET_TYPE=$WLAN_NET_TYPE
+# DEBUG unset by default
+# LOOP unset by default
+
+# Choose a different default net based on the program name
+case "$PROG_NAME" in
+    eth_report)            DEFAULT_NET_TYPE=$ETH_NET_TYPE  ;;
+    wlan_report)           DEFAULT_NET_TYPE=$WLAN_NET_TYPE ;;
+    connectivity_report|*) DEFAULT_NET_TYPE=$ALL_NET_TYPE  ;;
+esac
+NET_TYPE="$DEFAULT_NET_TYPE"
+
+usage() {
+    printf "Usage:\n"
+    printf "    \t%s [-h] [-l] [-n{net}] [-t{timeout}] [-v]\n" $PROG_NAME
+    echo "Where:"
+    printf "  -l\t\tContinuously loop generating report\n"
+    printf "  -n{net}\tPick net (w=wlan,e=eth,a=all; default %s)\n" \
+           $DEFAULT_NET_TYPE
+    printf "  -t{time}\tTime between report loops (default %d seconds)\n" \
+           $DEFAULT_SLEEP_TIME
+    printf "  -v\t\tShow version\n"
+    printf "  -x\t\tShow disconnected clients\n"
+    printf "  -h\t\tThis help\n"
+    printf "\n"
+    printf " Note: -t{time} has no effect without -l.\n"
+}
+
+fail() {
+    >&2 echo "$*"
+    usage
+    exit 1
+}
+
+# $1 is command-line type option
+set_type() {
+    case $1 in
+        w|W) NET_TYPE=$WLAN_NET_TYPE ;;
+        e|E) NET_TYPE=$ETH_NET_TYPE  ;;
+        a|A) NET_TYPE=$ALL_NET_TYPE  ;;
+        *)  fail "$PROG_NAME Error: illegal argument to -n" ;;
+    esac
+}
+
+while getopts ":dhln:t:vx" opt;do
+    case $opt in
+        d)  DEBUG=1 ;;
+        l)  LOOP=1  ;;
+        t)  SLEEP_TIME="$OPTARG" ;;
+        v)  printf "%s version %s\n" "$PROG_NAME" "$VERSION" ; exit 0 ;;
+        h)  usage ; exit 0 ;;
+        n)  set_type "$OPTARG" ;;
+        x)  SHOW_DISCON=1 ;;
+        ?)  fail "Invalid option: -$OPTARG" ;;
+        :)  fail "Option -${OPTARG} needs an argument." ;;
+    esac
+done
+shift $((OPTIND-1))
+
+STATUS_TAG='"status" *:"'
+
+# $1 path to status file
+report_item() {
+    local THIS_NET="$(echo $1 | cut -f4 -d/)"
+    [ $DEBUG ] && >&2 echo "report_item $1, THIS_NET: $THIS_NET"
+    local NODE_ID="$(echo $1 | cut -f5 -d/)"
+    if [ "$NODE_ID" != "master" ]; then
+        NODE_ID="$(echo $NODE_ID | cut -c25-)"
+    fi
+    if [ "$THIS_NET" = $WLAN_NET_TYPE ]; then
+        CLIENT="$(jsonparse data.sta_bssid < $1)"
+    else
+        CLIENT="$(jsonparse data.client_mac < $1)"
+    fi
+    local MCS=""
+    if [ "$THIS_NET" = $WLAN_NET_TYPE ]; then
+        MCS="$(jsonparse data.mcs < $1)"
+    else
+        MCS="N/A"
+    fi
+    local RSSI=""
+    if [ "$THIS_NET" = $WLAN_NET_TYPE ]; then
+        RSSI="$(jsonparse data.rssi < $1)"
+    else
+        RSSI="N/A"
+    fi
+
+    # Try to use file internal timestamp
+    local TS="$(jsonparse TS < $1)"
+    # If that no work, use file date/time
+    if [ -z "$TS" ]; then
+        TS="$(stat -c '%y' $1 | cut -f1 -d. | cut -f2- -d' ')"
+    fi
+    local STATUS="$(jsonparse data.status < $1)"
+    case $STATUS in
+        connected|CONNECTED)       STATUS="up"   ;;
+        disconnected|DISCONNECTED) STATUS="down" ;;
+        *)                         STATUS="-"    ;;
+    esac
+
+    if [ "$SHOW_DISCON" = "1" -o "$STATUS" = "up" ]; then
+        printf "%17s  %-4s  %-4s  %-10s  %4s  %3s  %s\n" \
+               "$CLIENT" "$STATUS" "$THIS_NET" "$NODE_ID" "$MCS" "$RSSI" "$TS"
+    fi
+}
+
+no_connections() {
+    echo "No connections found"
+    exit 0
+}
+
+# $1 network type to gather; ETH, WLAN or ALL
+gather_net_dirs() {
+    local DIRS=""
+    case "$1" in
+        $WLAN_NET_TYPE|$ETH_NET_TYPE)
+            find /tmp/msg/$1/*/* -maxdepth 0 -type d
+            ;;
+        $ALL_NET_TYPE)
+            local DIRS_A="$(gather_net_dirs $ETH_NET_TYPE)"
+            local DIRS_B="$(gather_net_dirs $WLAN_NET_TYPE)"
+            echo $DIRS_A $DIRS_B
+            ;;
+
+        *)  fail "$PROG_NAME Error: network type '$1'" ;;
+    esac
+}
+
+DIR=/tmp/msg
+[ ! -d $DIR ] && no_connections
+
+NET_DIRS="$(gather_net_dirs $NET_TYPE)"
+[ -z "$NET_DIRS" ] && no_connections
+
+status_files () {
+    find $NET_DIRS -name status
+}
+
+report() {
+    [ $DEBUG ] && echo "status files: $(status_files)"
+    echo "      Client       Stat  Net      Node     MCS  RSSI           When"
+    echo "-----------------  ----  ----  ----------  ---  ----  -----------------------"
+    for i in $(status_files); do
+        report_item "$i"
+    done | sort
+}
+
+if [ $LOOP ]; then
+    echo "(Reporting connection status every $SLEEP_TIME seconds; ^C to stop)"
+    while true; do
+        echo "As of $(date):"
+        report
+        echo
+        sleep $SLEEP_TIME
+    done
+else
+    report
+fi
