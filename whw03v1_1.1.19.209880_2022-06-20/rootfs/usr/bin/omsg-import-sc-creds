@@ -1,0 +1,66 @@
+#!/bin/sh
+#
+# Import SmartConnect credentials to Mosquitto passwd-style file
+#
+# Copyright (c) 2018, Belkin Inc. All rights reserved.
+
+MOSQ_CONF_DIR=/tmp/etc/mosquitto
+MOSQ_PW=mosquitto_passwd
+
+MASTER_USER=master
+MASTER_PW="$(syscfg get device::uuid)"
+
+PW_FILE=${MOSQ_CONF_DIR}/mosquitto-passwd
+PROTO_FILE=${PW_FILE}.proto
+
+PSK_FILE=${MOSQ_CONF_DIR}/psk/server.keys
+
+SMARTCONNECT_SQLFILE=/var/config/smartconnect/server.sql
+SQL=sqlite3
+SQL_ARGS="-separator :"
+SQL_CMD='select srplogin,srppassword from authorize;'
+
+mkdir -p $MOSQ_CONF_DIR
+
+if [ -f "$SMARTCONNECT_SQLFILE" ]; then
+    $SQL $SQL_ARGS $SMARTCONNECT_SQLFILE "$SQL_CMD" > $PROTO_FILE
+    RC=$?
+    if [ $RC -eq 0 ]; then
+
+        if $MOSQ_PW -U $PROTO_FILE; then
+            mv $PROTO_FILE $PW_FILE
+            # Add master as special case
+            syscfg set smart_connect::auth_login $MASTER_USER
+            syscfg set smart_connect::auth_pass  $MASTER_PW
+            $MOSQ_PW -b $PW_FILE "$MASTER_USER" "$MASTER_PW"
+        else
+            echo "Error from $MOSQ_PW processing $PROTO_FILE"
+            RC=1
+        fi
+    else
+        echo "Error $RC exporting Node credentials"
+    fi
+else
+    echo "File '$SMARTCONNECT_SQLFILE' not found, nothing to do"
+fi
+
+# $1: ID
+# $2: key
+add_pair () {
+    #echo "Adding key $1:$2" 2>&1
+    printf "%s:%s\n" "$1" "$2" >> $PSK_FILE
+}
+
+# Also generate shared-keys file
+# Start with cleared file
+> $PSK_FILE
+
+# First the fixed key:
+add_pair "omsg" "e0d3657f1fa8b4305f541bb8f4ec8adf"
+
+$SQL $SQL_ARGS $SMARTCONNECT_SQLFILE "$SQL_CMD" | \
+    while read i; do
+        ID="$(echo $i | cut -f1 -d:)"
+        KEY="$(echo $i | cut -f2 -d: | hexen -p)"
+        add_pair "$ID" "$KEY"
+    done

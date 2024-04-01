@@ -1,0 +1,133 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+--
+-- Copyright (c) 2016, Belkin Inc. All rights reserved.
+--
+--! @file
+
+-- Keep prog_name global for use in error messages
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+cli   = require "cliargs"
+nutil = require 'nodes.util'
+flogger = require 'nodes.util.flogger'
+ddb = require('libdevdblua').db()
+ddb_util = require'nodes.util.devdb'
+ddb_import = require'nodes.util.devdb.importer'
+import_actions = require'nodes.util.devdb.importer.actions'
+
+-- Keep opts global for access by external modules
+opts  = { prog_name = prog_name }
+
+local action_names = import_actions.Action_names
+local migrator = require'nodes.util.devdb.importer.actions.migrate'
+
+local debout = nutil.debout
+local verbout = nutil.verbout
+
+-- Custom errout that also sends error messages to syslog
+local function errout( fmt, ... )
+   flogger.flog({ tag = "ddb_omsg_import", msg = fmt }, ... )
+   nutil.errout( fmt, ... )
+end
+
+function parse_args()
+   local act_opts = import_actions.opt_list()
+   -- Set up command line options
+   cli:set_name( prog_name                                              )
+   cli:set_description( 'Import device data to DDB'                     )
+   cli:argument( "INPUT", "Path to file"                                )
+   cli:option( "-a,--action=ACTION", "Select action ("..act_opts..")",
+                                                   action_names.devinfo )
+   cli:flag(   "-d,--debug",     "Show debugging output", false         )
+   cli:flag(   "-v,--verbose",   "Be verbose",            false         )
+   cli:flag(   "-h,--help",      "This help"                            )
+
+   local args, err = cli:parse()
+
+   if not args and err then
+      errout( err )
+      os.exit( 0 )
+   else
+      if not action_names[args.action] then
+         error( ("Unknown action '%s'\n"):format( tostring(args.action)))
+      end
+      local opts = {
+         debug   = not not args.debug,
+         verbose = not not args.verbose,
+         fname   = args.INPUT,
+         action  = args.action
+      }
+      -- If debug is set, output the options
+      if opts.debug then
+         errout( "%s options: ", cli.name )
+         for k,v in pairs( opts ) do
+            errout( "%12s: (%s)", k, tostring( v ))
+         end
+      end
+      return opts
+   end
+end
+
+--! @brief Set a device field in the DB w/given confidence.
+--! @param uuid String containing device ID
+--! @param fname Field name (e.g. "firmwareVersion")
+--! @param fvalue Value of field
+--! @param confidence Numeric confidence value for this field
+--! @return Status value from DeviceDB setDevice
+--! @throws Various error strings
+function set_device_field( uuid, fname, fvalue, confidence )
+   local ok, status = false, false
+   local ddb = require('libdevdblua').db()
+
+   if ddb:writeLock() then
+      local dev = {}
+      dev.deviceId = uuid
+      dev[fname] = fvalue
+      ok, status = pcall( ddb.setDevice, ddb, dev, confidence )
+      if ok then
+         ddb:writeUnlockCommit()
+      else
+         ddb:writeUnlockRollback()
+         debout( "Got error '%s'", status )
+         error( status, 2 )
+      end
+   else
+      error "Unable to write-lock deviceDB"
+   end
+   return status
+end
+
+local MODES = {
+   UNCONFIGURED = "0",
+   SLAVE        = "1",
+   MASTER       = "2",
+}
+
+json = {}
+
+function _main()
+   opts = parse_args()
+   local json, err = nil, nil
+
+   json,err = nutil.json_file_to_table( opts.fname )
+   if json == nil then
+      error( err )
+   end
+   local action = require( 'nodes.util.devdb.importer.actions.'..opts.action )
+   action( json )
+end
+
+local ok, err = pcall( _main )
+if ok then
+   verbout "omsg data imported to DeviceDB."
+   os.exit( 0 )
+else
+   errout( "%s error: '%s'", prog_name, tostring( err ))
+   if ddb then
+      debout "Unlocking DeviceDB after error"
+      pcall( ddb.writeUnlockRollback, ddb )
+      pcall( ddb.readUnlock, ddb )
+   end
+   os.exit( 1 )
+end

@@ -1,0 +1,66 @@
+#!/bin/sh
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/service_misc_functions.sh
+source /etc/init.d/tesseract_common.sh
+
+[ "$(syscfg get "${NAMESPACE}::debug")" == "1" ] && DEBUG=1
+
+PROGNAME=$(basename $0)
+
+# Helper to determine if a given file is older than a certain age
+# $1: file
+# $2: Minimum age (in minutes)
+file_is_ripe () {
+    local NAME="$(basename $1)"
+    local DIR="$(dirname $1)"
+    local MIN_AGE=$2
+    local RIPE_FILE="$(find $DIR       \
+                            -maxdepth 1 \
+                            -name $NAME  \
+                            -mmin +$MIN_AGE 2>/dev/null)"
+    [ -n "$RIPE_FILE" ]
+}
+
+# Helper to determine if firmware update is being performed.  We don't
+# want to disconnect any Nodes during a firmware update.
+firmware_is_updating () {
+    local FWUP_STATE="$(sysevent get fwup_state)"
+    local STATUS
+    if [ -z "$FWUP_STATE" -o "$FWUP_STATE" = "0" ]; then
+        STATUS=1
+    else
+        STATUS=0
+    fi
+    return $STATUS
+}
+
+
+########################################################################
+#                        Mutual exclusion zone
+# We don't want to run multiple simultaneous copies of Thrulay so use
+# a file lock.  We also don't need to run multiple consecutive
+# Thrulays; if it just ran then there is no need to run it again.  So
+# have the lock fail (rather than block) and exit.
+(
+    if firmware_is_updating; then
+        DBG conslog "$PROGNAME: Skipping balance check: firmware update in progress"
+    elif [ -f $TESSERACT_BAL_CHECK_FLAG ]; then
+        flock -n 9 || die "$PROGNAME: Topology check already in progress; aborting"
+        MIN_AGE="$(syscfg get ${NAMESPACE}::${TESSERACT_BAL_DELAY})"
+        if file_is_ripe $TESSERACT_BAL_CHECK_FLAG $MIN_AGE; then
+            if balance -v -a; then
+                DBG conslog "$PROGNAME: Network is adequately balanced"
+            else
+                DBG conslog "$PROGNAME: Rebalancing network"
+            fi
+            rm $TESSERACT_BAL_CHECK_FLAG
+        else
+            DBG conslog "$PROGNAME: Skipping balance check; request <= $MIN_AGE minutes old."
+        fi
+    else
+        DBG conslog "$PROGNAME: Balance check not indicated."
+    fi
+) 9>$TESSERACT_LOCK_FILE
+#
+########################################################################

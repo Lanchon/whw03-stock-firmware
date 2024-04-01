@@ -1,0 +1,7 @@
+#!/bin/sh
+#Move the sysevent below to the service_healthcheck_manager.sh
+#sysevent set speedtest::running 1
+./ookla_client --configurl=http://www.speedtest.net/api/embed/belkin/config
+#./ookla_client 
+#Move the sysevent below to the service_healthcheck_manager.sh
+#sysevent set speedtest::running 0

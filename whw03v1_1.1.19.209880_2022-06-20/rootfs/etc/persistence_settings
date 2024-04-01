@@ -1,0 +1,9 @@
+fwup_autoupdate_flags
+fwup_version_compare
+lrhk::ownership_token
+lrhk::setup_code
+lrhk::software_token_uuid
+lrhk::software_token
+lrhk::setup_payload
+lrhk::ppid
+lrhk::productdata

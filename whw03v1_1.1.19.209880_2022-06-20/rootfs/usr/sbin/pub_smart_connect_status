@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish some backhaul status data to a MQTT topic
+#
+# To see the incoming data on the broker, use this command:
+#   $ mosquitto_sub -t /network/+/BH/status -d
+#
+DEBUG=1
+
+source /etc/init.d/sub_pub_funcs.sh
+
+STATUS="${1:-START}"
+
+PUB_TOPIC="$(omsg-conf SC | sed "s/+/$TOPIC_UUID/" )"
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   TOPIC    : $PUB_TOPIC"
+fi
+
+mk_infra_payload \
+    -s "status:$STATUS" \
+    -s "uuid:$UUID" | \
+       publish "$PUB_TOPIC"

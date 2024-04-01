@@ -1,0 +1,45 @@
+#!/usr/bin/env lua
+-- Determin if a MAC address corresponds to a Node.
+-- If it does, exit with status 0 (non-error)
+-- If it does not, exit with status 1
+-- If an error occurrs, exit with > 1
+package.path = "./?/init.lua;/home/dash/lib/lua/5.1/?.lua;/home/dash/lib/lua/5.1/?/init.lua;"..package.path
+
+NET = require 'nodes.tess.network'
+cli   = require "cliargs"
+nutil = require 'nodes.util'
+local errout = nutil.errout
+local debout = nutil.debout
+local verbout = nutil.verbout
+
+function die(...)
+   errout(...)
+   os.exit( 2 )
+end
+
+-- Keep prog_name global for use in error messages
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+function _main()
+   mac = arg[1]
+
+   if not mac or mac == "" then
+      die( "%s Error: Missing parameter", prog_name )
+   end
+
+   net = NET.snapshot()
+   if not net then
+      die( "%s: Error: Missing parameter", prog_name )
+   end
+
+   local status = 0 -- Assume it is a node
+   if net:find_node_by_mac( mac ) == nil then status = 1 end
+   return status
+end
+
+ok, status = pcall( _main )
+if ok then
+   os.exit( status )
+else
+   die( status )
+end

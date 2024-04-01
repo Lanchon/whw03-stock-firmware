@@ -1,0 +1,15 @@
+{
+    "setup_intf"             : "any",
+    "setup_port"             : 6048,
+    "config_intf"            : "any",
+    "config_port"            : 6049,
+    "control_path"           : "/tmp/smartconnect/control",
+    "system_service"         : "/lib/liblscsysserv.so",
+    "daemon"                 : 1,
+    "settings_file"          : "/etc/smartconnect/server.settings",
+    "setup_wait_time"        : 30,
+    "connection_duration"    : 30,
+    "default_setup_duration" : 120,
+    "preauth_duration"       : 120,
+    "debug_print"            : 1
+}

@@ -1,0 +1,53 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Update device DB with DEVINFO data.  This flavor supports DeviceDB
+#
+
+PROGNAME=$(basename $0)
+
+usage() {
+    printf "Usage:\n"
+    printf "        %s {options}\n" $PROGNAME
+    echo "Where {options} are one or more of:"
+    printf "  -d\tDebug mode\n"
+    printf "  -n\tNo action (dry run)\n"
+    printf "  -h\tThis help\n"
+}
+
+while getopts ":dhn" opt;do
+    case $opt in
+        d) DEBUG=1 ;;
+        n) DRY_RUN=1 ; PREFIX="echo" ;;
+        h) usage ; exit 0 ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+# Should be one remaining argument, the DEVINFO path
+if [ "$#" -ne 1 ]; then
+    usage
+    exit 1
+fi
+
+DEVINFO_FILE="$1"
+CMD="ddb_omsg_import $DEVINFO_FILE"
+
+if [ "$DEBUG" ]; then
+    echo "DEVINFO_FILE: $DEVINFO_FILE"
+    echo "Will execute:"
+    echo "$CMD"
+fi
+
+$PREFIX $CMD

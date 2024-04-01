@@ -1,0 +1,67 @@
+#!/usr/bin/env lua
+--
+-- Copyright (c) 2017, Belkin Inc. All rights reserved.
+--
+-- Inject names of updated syscfg variables into specified file,
+-- conditioned against their presence in the specified "master" file.
+
+opts     = {} -- This needs to be global
+JSON     = require 'libhdkjsonlua'
+nutil    = require 'nodes.util'
+cli      = require "cliargs"
+Flocker  = require 'nodes.util/flocker'
+
+-- Harvest some system information
+local prog_name = string.match( arg[0], ".*/(.*)" )
+
+debout  = nutil.debout
+verbout = nutil.verbout
+errout  = nutil.errout
+
+INJ      = require 'nodes.syscfg_injector'
+local LOCK_FILE = nutil.join_dirs( "/var/lock", prog_name..".lock" )
+
+function _main()
+   -- First, obtain exclusive lock for this process.
+   lock = Flocker:new{ lock_file = LOCK_FILE }
+   -- If not locked after 5 seconds give up
+   local locked, why_not = lock:wait_for_lock( 10 )
+   if not locked then error( why_not ) end
+
+   opts = INJ.parse_args(prog_name)
+
+   local syscfgs = INJ.load_syscfg_list( opts.syscfgs )
+   for i,syscfg in ipairs( syscfgs ) do
+      debout( "%02d: %s", i, tostring( syscfg ))
+   end
+   local backup = INJ.load_backup_file( opts.backup )
+   if backup == nil then error "Failed to load or create backup data" end
+   local map = INJ.load_syscfg_map( opts.master )
+
+   local need_to_write = INJ.inject{ backup = backup,
+                                     map = map,
+                                     syscfg = syscfgs }
+   if need_to_write then
+      INJ.write_backup_file( opts.backup, backup )
+      verbout( "Wrote changes to '%s'", opts.backup )
+   else
+      verbout "No changes to write."
+   end
+   if opts.test then
+      print "Fake delay for testing"
+      os.execute 'sleep 1'
+   end
+
+   lock:unlock()
+
+   return true
+end
+
+local status = 0
+local ok, err = pcall( _main )
+if not ok then
+   print( prog_name .. " error: " .. tostring( err ))
+   status = 1
+end
+
+os.exit( status )

@@ -1,0 +1,30 @@
+#!/bin/sh
+
+source /etc/init.d/service_wifi/wifi_user.sh
+
+DEFAULT_MPSK_FILE="/tmp/hostapd.mpsk"
+
+if [ "$1" = '-h' ]; then
+    echo "Generate partial hostapd MPSK file containing system passwords"
+    echo "Usage: $(basename $0) [-h] [mpsk file]"
+    echo "Where:"
+    echo "   -h         This help"
+    echo "  mpsk file   File to write (default: DEFAULT_MPSK_FILE)"
+    exit 0
+fi
+
+MPSK_FILE="${1:-$DEFAULT_MPSK_FILE}"
+PSK_PW="$(syscfg get wl0_passphrase)"
+
+
+if [ $DEBUG ]; then
+    echo "Would write to '$MPSK_FILE' using PSK '$PSK_PW'"
+    echo "Invoking generate_default_mpsk_config $PSK_PW $MPSK_FILE"
+fi
+
+generate_default_mpsk_config "$PSK_PW" "$MPSK_FILE"
+
+if [ $DEBUG ]; then
+    echo "Results:"
+    cat $MPSK_FILE
+fi

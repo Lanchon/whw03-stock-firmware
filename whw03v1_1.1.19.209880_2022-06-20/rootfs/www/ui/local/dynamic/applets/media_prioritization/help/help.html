@@ -1,0 +1,24 @@
+<% if (RAINIER.network.isGamingPrioritizationSupported()) { %>
+    <h1>{{dynamic-applets-media_prioritization-help.e64d9c19}}</h1>
+    <p>{{dynamic-applets-media_prioritization-help.77c6f602}}</p>
+    <p>{{dynamic-applets-media_prioritization-help.5a918d59}}</p>
+<% } else if (RAINIER.network.isLvvpSupported()) { %>
+    <h1>{{dynamic-applets-media_prioritization-help.6e30563b}}</h1>
+    <p>{{dynamic-applets-media_prioritization-help.06dd46ee}}</p>
+<% } else { %>
+    <h1>{{dynamic-applets-media_prioritization-help.6e30563b}}</h1>
+    <p>{{dynamic-applets-media_prioritization-help.fd56cdf9}}</p>
+
+    <% if (RAINIER.network.isHealthCheckRequiredByQoS()) { %>
+        <p>{{dynamic-applets-media_prioritization-help.c380230e}}</p>
+    <% } %>
+
+    <% if (RAINIER.network.isBehindNode()) { %>
+        <p>{{dynamic-applets-media_prioritization-help.866b26e4}}</p>
+    <% } else { %>
+        <p>{{dynamic-applets-media_prioritization-help.5eb2af83}}</p>
+        <p>{{dynamic-applets-media_prioritization-help.3bfcf210}}</p>
+        <p>{{dynamic-applets-media_prioritization-help.029c3630}}</p>
+    <% } %>
+<% } %>
+<p><a class="help-top">{{dynamic-applets-media_prioritization-help.6fd65fac}}</a></p>

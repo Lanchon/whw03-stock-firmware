@@ -1,0 +1,13 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish "We're shutting down gracefully" mesage to Master.
+
+# Set common values
+source /etc/init.d/sub_pub_funcs.sh
+
+PUB_TOPIC="$(omsg-conf -m NODE-SHUTDOWN | sed "s/+/$UUID/" )"
+validate PUB_TOPIC
+
+mk_infra_payload -t status -u "$UUID" | publish "$PUB_TOPIC"

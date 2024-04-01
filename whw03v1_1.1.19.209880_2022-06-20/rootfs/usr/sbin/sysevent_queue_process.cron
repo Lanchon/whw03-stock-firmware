@@ -1,0 +1,37 @@
+#!/bin/sh
+
+# DEBUG=1
+
+. /etc/init.d/queue_common.sh
+source /etc/init.d/ulog_functions.sh
+
+logstatus() {
+    ARGS="$(printf "$@")"
+    ulog ${PROG_NAME} STATUS "$ARGS"
+}
+
+logerr() {
+    ARGS="$(printf "$@")"
+    ulog ${PROG_NAME} ERROR "$ARGS"
+}
+
+process_queued_events() {
+    local FIRST="1"
+    local SLEEP_TIME="$(syscfg get senq::event_pause)"
+    [ -z "$SLEEP_TIME" ] && SLEEP_TIME=0
+    while read raw_event; do
+        local name="$(echo "$raw_event" | cut -f1 -d=)"
+        local value="$(echo "$raw_event" | cut -f2 -d=)"
+        if [ "$FIRST" ]; then
+            unset FIRST
+        else
+            sleep $SLEEP_TIME
+        fi
+        sysevent set $name $value
+        logstatus "$PROG_NAME sysevent '$name' '$value'"
+    done
+}
+
+extract_all | process_queued_events
+
+exit 0

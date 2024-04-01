@@ -1,0 +1,184 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+-- Harvest secondary interface MACs.  These (often virtual) interfaces
+-- are created over the course of during system operation.  Since they
+-- can be the visible endpoint of connections from this device they
+-- need to be registered with Master.
+
+opts = {}
+
+-- Make these local
+M = require'nodes.util.mac'
+cli = require "cliargs"
+NU = require'nodes.util'
+verbout = NU.verbout
+debout = NU.debout
+errout = NU.errout
+
+-- Harvest some system information
+local prog_name = string.match( arg[0], ".*/(.*)" )
+
+
+function parse_args()
+   -- Set up command line options
+   cli:set_name( prog_name )
+   cli:set_description( 'Generate list of MACs for MQTT DEVINFO message' )
+   cli:option( "-m,--mac=MAC", "Set base MAC" )
+   cli:flag(   "-d,--debug",   "Show debugging output",  false  )
+   cli:flag(   "-n,--dry-run", "No cloud communication", false  )
+   cli:flag(   "-o,--filter-oui", "Filter MAC sharing OUI w/base", false  )
+   cli:flag(   "-v,--verbose", "Be verbose",             false  )
+   cli:flag(   "-h,--help",    "This help",              false  )
+   cli:flag(   "-j,--json",    "Format for JSON use",    false  )
+
+   local args, err = cli:parse()
+
+   if not args and err then
+      errout( err )
+      os.exit(1)
+   else
+      if not args.mac then
+         io.stderr:write( "Error: -m/--mac option is mandatory\n" )
+         cli:print_usage()
+         os.exit(1)
+      end
+      local opts = {
+         debug = not not args.debug,
+         verbose = not not args.verbose,
+         base_mac = M.Mac:new( args.mac ),
+         dry_run = not not args["dry-run"],
+         filter_oui = not not args["filter-oui"],
+         json = not not args.json,
+      }
+      -- If debug is set, dump out the options now
+      if opts.debug then
+         debout( "%s options:", cli.name )
+         for k,v in pairs( opts ) do
+            debout( "%12s: (%s)", k, tostring( v ))
+         end
+      end
+      return opts
+   end
+end
+
+-- Return a list of strings that is the output if "ifconfig -a"
+function get_raw_interface_data()
+   local item, items = nil, {}
+   if opts.dry_run then
+      local raw_s = [[
+ath0      Link encap:Ethernet  HWaddr 14:91:82:6E:4C:3B
+ath0.4    Link encap:Ethernet  HWaddr 14:91:82:6E:4C:3B
+ath1      Link encap:Ethernet  HWaddr 14:91:82:6E:4C:3C
+ath10     Link encap:Ethernet  HWaddr 14:91:82:6E:4C:3D
+ath10.4   Link encap:Ethernet  HWaddr 14:91:82:6E:4C:3D
+ath11     Link encap:Ethernet  HWaddr 1A:91:82:6E:4C:3D
+ath11.4   Link encap:Ethernet  HWaddr 1A:91:82:6E:4C:3D
+ath4      Link encap:Ethernet  HWaddr 1E:91:82:6E:4C:3B
+ath5      Link encap:Ethernet  HWaddr 1A:91:82:6E:4C:3B
+ath9      Link encap:Ethernet  HWaddr 1A:91:82:6E:4C:3C
+ath9.4    Link encap:Ethernet  HWaddr 1A:91:82:6E:4C:3C
+br0       Link encap:Ethernet  HWaddr 14:91:82:6E:4C:3A
+br2       Link encap:Ethernet  HWaddr 14:91:82:6E:4C:3B
+eth0      Link encap:Ethernet  HWaddr 96:F4:41:D5:B9:71
+eth1      Link encap:Ethernet  HWaddr 14:91:82:6E:4C:3A
+eth1.4    Link encap:Ethernet  HWaddr 14:91:82:6E:4C:3A
+]]
+      for item in raw_s:gmatch( "[^\n]+" ) do
+         table.insert( items, item )
+      end
+   else
+      -- On router, we want to io.popen something like:
+      -- ifconfig -a|grep -i ethernet|grep -v -e bond -e tap
+      local handle = io.popen( "ifconfig -a|grep -i ethernet|grep -v -e bond -e tap" )
+      if handle then
+         repeat
+            item = handle:read()
+            debout( "Found interface: %s", tostring( item ))
+            if item then table.insert( items, item ) end
+         until item == nil
+      else
+         error "Couldn't spawn ifconfig"
+      end
+   end
+   return items
+end
+
+function parse_intf_data( raw_intfs )
+   local items = {}
+   for _,item in ipairs( raw_intfs ) do
+      local intf = {}
+      local name, _,_,_,raw_mac = item:match( "%s*(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s+(%S+)%s*" )
+      debout( "name: '%s', mac: '%s'", name, raw_mac )
+      items[#items+1] = { name = name, mac = M.Mac:new( raw_mac ) }
+   end
+   return items
+end
+
+function dedupe( list )
+   local inter = {}
+   for _,item in ipairs( list ) do
+      inter[tostring(item.mac)] = item
+   end
+   local deduped = {}
+   for k,v in pairs( inter ) do
+      table.insert( deduped, v )
+   end
+   return deduped
+end
+
+function filter_out_oui( list, base )
+   if base == nil then error( "Missing base argument", 2 ) end
+   if list == nil then error( "Missing list argument", 2 ) end
+   local filtered = {}
+   for _,intf in ipairs( list ) do
+      if not ( intf.mac * base ) then table.insert( filtered, intf ) end
+   end
+   return filtered
+end
+
+
+-- base_mac = M.Mac:new(arg[1])
+opts = parse_args()
+
+raw_ints = get_raw_interface_data()
+intfs = parse_intf_data( raw_ints )
+if opts.debug then
+   if #intfs > 0 then
+      debout( "Full interface list:" )
+      for i,intf in ipairs( intfs ) do
+         debout( "%d  %s %s", i, intf.name, tostring( intf.mac ))
+      end
+   else
+      debout "No interfaces at all discovered"
+   end
+end
+
+deduped = dedupe( intfs )
+if opts.filter_oui then
+   debout( "filtering on OUI" )
+   filtered = filter_out_oui( deduped, opts.base_mac )
+else
+   debout( "Skipping OUI filter" )
+   filtered = deduped
+end
+
+verbout( "Base MAC: %s", tostring( opts.base_mac ))
+if opts.debug then
+   debout( "Remaining macs:" )
+   for i,intf in ipairs( filtered ) do
+      debout( "%d: %s %s", i, intf.name, tostring( intf.mac ))
+   end
+end
+
+just_macs = {}
+for i,intf in ipairs( filtered ) do
+   local mac = tostring(intf.mac)
+   if opts.json then mac = '"'..mac..'"' end
+   table.insert( just_macs, mac )
+end
+
+if opts.json then
+   print( "[ " .. table.concat( just_macs, ", " ) .. " ]" )
+else
+   print( table.concat( just_macs, " " ))
+end

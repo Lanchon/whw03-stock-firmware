@@ -1,0 +1,714 @@
+#!/bin/sh
+# tess_steer - Tesseract node & client steering utility
+#
+# Copyright (c) 2018, Belkin Inc. All rights reserved.
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/service_misc_functions.sh
+source /etc/init.d/tesseract_common.sh
+source /etc/init.d/service_wifi/wifi_steer_util.sh
+
+[ "$(syscfg get "${NAMESPACE}::debug")" = "1" ] && DEBUG=1
+
+PROGNAME=$(basename $0)
+MODE="$(syscfg get smart_mode::mode)"
+
+# Helper to convert a duration in seconds to minutes
+# $1: Time in seconds
+secs_to_mins () {
+    dc $1 60 / p
+}
+
+# Load some syscfg values
+RCPI_MIN_DELTA="$(syscfg get $CLIENT_STEER_RCPI_MIN_DELTA_SYSCFG_VAR)"
+CONNECT_TIMEOUT="$(syscfg get $CLIENT_STEER_CONNECT_TIMEOUT_SYSCFG_VAR)"
+TEMP_BLACKLIST_TIMEOUT="$(syscfg get $CLIENT_STEER_TEMP_BLACKLIST_TIMEOUT_SYSCFG_VAR)"
+CLIENT_STEERING_ENABLED="$(syscfg get $CLIENT_STEER_ENABLED_SYSCFG_VAR)"
+SURVEY_DELAY="$(syscfg get $CLIENT_STEER_SURVEY_DELAY_SYSCFG_VAR)"
+SURVEY_INTERVAL="$(syscfg get $CLIENT_STEER_SURVEY_INTERVAL_SYSCFG_VAR)"
+SURVEY_INTERVAL_IN_MINS=$(secs_to_mins $SURVEY_INTERVAL)
+STEER_TIMEOUT="$(syscfg get $CLIENT_STEER_CONNECT_TIMEOUT_SYSCFG_VAR)"
+NODE_CONNECT_TIMEOUT="$(syscfg get $CLIENT_STEER_NODE_CONNECT_DELAY_SYSCFG_VAR)"
+DECISION_ENG="$(syscfg get $STEERING_DECISION_ENG_SYSCFG_VAR)"
+DECISION_ENG_OPTS="-v -c"
+NODE_STEERING_ENABLED="$(syscfg get $NODE_STEER_ENABLED_SYSCFG_VAR)"
+NODE_STEERING_COOLDOWN="$(syscfg get ${NODE_STEER_MIN_COOLDOWN_SYSCFG_VAR})"
+
+if [ -z "$DECISION_ENG" ]; then
+    conslog "No decision-engine configured, nothing to do."
+    conslog "Set '$STEERING_DECISION_ENG_SYSCFG_VAR' to continue"
+    exit 1
+else
+    DECISION_ENG="$(type -p $DECISION_ENG)"
+    if [ ! -x "$DECISION_ENG" ]; then
+        conslog "Can't find configured decision-engine '$DECISION_ENG'; no actions possible"
+        exit 1
+    fi
+fi
+
+CACHE_DIR_BASE="$(syscfg get subscriber::file_prefix)"
+WLAN_MSG_DIR=${CACHE_DIR_BASE}/WLAN
+
+OP_ALL="all"
+OP_PROCESS_SURVEY_REQUESTS="survey_requests"
+OP_PROCESS_SURVEYS="surveys"
+OP_PROCESS_PENDING_STEERS="pending_steers"
+OP_PROCESS_PENDING_BLACKLISTS="pending_blacklists"
+OP_PROCESS_PENDING_NODE_CONNECTS="pending_node_connects"
+OP_PROCESS_LOCAL_INSTALLED_BLACKLISTS="local_installed_blacklists"
+OP_LIST="\
+$OP_PROCESS_SURVEY_REQUESTS \
+$OP_PROCESS_SURVEYS \
+$OP_PROCESS_PENDING_STEERS \
+$OP_PROCESS_PENDING_BLACKLISTS \
+$OP_PROCESS_PENDING_NODE_CONNECTS \
+$OP_PROCESS_LOCAL_INSTALLED_BLACKLISTS \
+$OP_ALL"
+OP_DEFAULT=$OP_ALL
+OP=$OP_DEFAULT
+
+usage() {
+    cat <<EOF
+$PROGNAME: Tesseract client-steering multi-purpose utility command.
+Usage: $PROGNAME {options}
+Where {options} are can be any of:
+  -b          Set blacklist timeout (default: $TEMP_BLACKLIST_TIMEOUT)
+  -c          Set connect timeout (default: $CONNECT_TIMEOUT)
+  -d          Debug mode
+  -D          Don't delete files after processing (default: '${DEL_USED_FILE:-keep}')
+  -r          Set RCPI minimum delta (default: $RCPI_MIN_DELTA)
+  -s          Set survey delay (default: $SURVEY_DELAY)
+  -W          Waiting to survey directory (default: $TESS_CS_WAIT_TO_SURVEY)
+  -S          Survey directory (default: $TESS_CS_SURVEYS)
+  -n          Don't actually steer; just show command that would be used
+  -o {OP}     Operation to perform (default: '$OP_DEFAULT')
+  -q          Generate local client-steering FSM status report
+  -h          This help
+Where {OP} can be any of $OP_LIST
+EOF
+}
+
+# Custom conslog that include program name
+conslog () {
+    echo "$PROGNAME|$(datime): $*" > /dev/console
+}
+
+
+# Process command line options, some of which may override syscfg values
+while getopts ":Dds:c:b:no:qr:S:W:h" opt;do
+    case $opt in
+        b) TEMP_BLACKLIST_TIMEOUT=$OPTARG ;;
+        c) CONNECT_TIMEOUT=$OPTARG        ;;
+        d) DEBUG=1                        ;;
+        D) unset DEL_USED_FILE            ;;
+        n) FAKE=1                         ;;
+        o) OP=$OPTARG                     ;;
+        r) RCPI_MIN_DELTA=$OPTARG         ;;
+        q) REPORT=1                       ;;
+        s) SURVEY_DELAY=$OPTARG           ;;
+        W) TESS_CS_WAIT_TO_SURVEY=$OPTARG ;;
+        S) TESS_CS_SURVEYS=$OPTARG        ;;
+        h) usage ; exit 0                 ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+# Basic information
+# $1: Additional verbage
+local_fsm_report () {
+    echo "$(syscfg get device::uuid)$1:"
+    tree --noreport -D --timefmt=%T $TESS_CS_BASE | tail -n +2
+}
+
+count_online_slaves () {
+    bh_report | tail -n +3 | grep -e ' up ' | wc -l
+}
+
+master_fsm_report () {
+    echo "=== Network-wide client-steering FSM status report ==="
+    local_fsm_report '(Master)'
+    local TOPIC="$(omsg-conf -s TESSERACT_CLIENT_STEER_FSM_REPORT)"
+
+    local MPID
+    local SCOUNT=$(count_online_slaves)
+    SCOUNT=${SCOUNT:-0}
+    local STATUS=0
+    # If there is 1 or more Slave Nodes on-line query them
+    if [ $SCOUNT -ge 1 ]; then
+        trap 'kill $MPID 2>/dev/null' 1 2 15
+        mosquitto_sub -t $TOPIC.response -C $SCOUNT &
+        MPID=$!
+
+        mosquitto_pub -t $TOPIC -m hello
+        DBG echo "(Waiting for other Nodes to report...)"
+        echo ""
+        wait $MPID ; STATUS=$?
+
+        # Just to be sure
+        kill $MPID 2>/dev/null
+        echo "=== Done ==="
+        trap '' 1 2 15
+    fi
+    return $STATUS
+}
+
+slave_fsm_report () {
+    local_fsm_report
+}
+
+if [ $REPORT ]; then
+    STATUS=0
+    case $MODE in
+        2) master_fsm_report ; STATUS=$? ;;
+        1)  slave_fsm_report ; STATUS=$? ;;
+        *) echo "Unknown Mode; taking no action" ;;
+    esac
+    exit $STATUS
+fi
+
+# Check that requested operation is valid.  If it is, then it should
+# duplicate one of the known operations.
+if [ -z "$( ( echo $OP ; for i in $OP_LIST;do echo $i; done ) | sort | uniq -d)" ]; then
+    echo "Error: unknown operation '$OP'"
+    exit 1
+fi
+
+if [ "$DEBUG" = "1" ]; then
+    echo "CONNECT_TIMEOUT:        '$CONNECT_TIMEOUT'"
+    echo "DEL_USED_FILE:          '${DEL_USED_FILE:-unset}'"
+    echo "CLIENT_STEERING_ENABLED:'$CLIENT_STEERING_ENABLED'"
+    echo "FAKE:                   '$FAKE'"
+    echo "RCPI_MIN_DELTA:         '$RCPI_MIN_DELTA'"
+    echo "SURVEY_DELAY:           '$SURVEY_DELAY'"
+    echo "SURVEY_WAITING_DIR:     '$TESS_CS_WAIT_TO_SURVEY'"
+    echo "TEMP_BLACKLIST_TIMEOUT: '$TEMP_BLACKLIST_TIMEOUT'"
+    echo "TESS_CS_SURVEYS:        '$TESS_CS_SURVEYS'"
+    echo "SURVEY_INTERVAL:        '$SURVEY_INTERVAL'"
+fi
+
+# Helper to determine if a given file is older than a certain age
+# $1: file
+# $2: Minimum age (in minutes)
+file_is_ripe () {
+    local NAME="$(basename $1)"
+    local DIR="$(dirname $1)"
+    local MIN_AGE=$2
+    local RIPE_FILE="$(find $DIR       \
+                            -maxdepth 1 \
+                            -iname $NAME  \
+                            -mmin +$MIN_AGE 2>/dev/null)"
+    [ -n "$RIPE_FILE" ]
+}
+
+# Is file younger than a certain age.  File must exist.
+# $1: file
+# $2: Maximum age (in minutes)
+file_newer_than () {
+    local FPATH=$1
+    local NAME="$(basename $FPATH)"
+    local DIR="$(dirname $FPATH)"
+    local MAX_AGE=$2
+    local YOUNG_FILE="$(find $DIR       \
+                            -maxdepth 1 \
+                            -iname $NAME  \
+                            -mmin -$MAX_AGE 2>/dev/null)"
+    [ -f "$FPATH" ] && [ -n "$YOUNG_FILE" ]
+}
+
+# Check if a client was recently surveyed.
+# $1: Client BSSID
+recently_surveyed () {
+    local SPATH1=${TESS_CS_SURVEYS}/$1
+    local SPATH2=${TESS_CS_SURVEYS}.OLD/$1
+    file_newer_than $SPATH1 $SURVEY_INTERVAL_IN_MINS || file_newer_than $SPATH2 $SURVEY_INTERVAL_IN_MINS
+}
+
+# Remove file unless DEL_USED_FILE is unset
+# $*: Files to remove
+purge_file () {
+    for FPATH in $*; do
+        if [ $DEL_USED_FILE ];then
+            DBG conslog "Removing $FPATH (DEL_USED_FILE: ${DEL_USED_FILE:-unset})"
+            rm -f $FPATH
+        else
+            # Save it in nearby ".old" directory
+            local OLD_DIR="$(dirname $FPATH).OLD/"
+            mkdir $OLD_DIR 2> /dev/null
+            mv "$FPATH" $OLD_DIR
+        fi
+    done
+}
+
+# Filter converting to upper case
+upper() {
+    tr '[a-z]' '[A-Z]'
+}
+
+# $1: TEST_OP
+# Exit true if global OP == TEST_OP or OP is 'all'
+if_op () {
+    [ "$OP" = "$OP_ALL" -o "$OP" = "$1" ]
+}
+
+# $1: Client station BSSID
+# $2: UUID of current AP
+is_btm_cap () {
+    local STATUS=1
+    local MAC="${1//:/-}"
+    local AP_UUID="$2"
+
+    # Special handling for Master UUID.
+    echo "Comparing '$(syscfg get device::uuid)' & '$AP_UUID'"
+    if [ "$(syscfg get device::uuid)" = $AP_UUID ]; then
+        AP_UUID="master"
+    fi
+    echo "AP_UUID now '$AP_UUID'"
+    local WLAN_STAT_PATH="${WLAN_MSG_DIR}/$AP_UUID/$MAC/status"
+
+    if [ -f "$WLAN_STAT_PATH" ]; then
+        local CAP_VAL="$(jsonparse -f $WLAN_STAT_PATH data.$TESS_JSON_BTM_CAP)"
+        DBG conslog "is_btm_cap( $1, $2 ): $CAP_VAL"
+        if [ "$CAP_VAL" = "true" ]; then
+            STATUS=0
+        fi
+    else
+        DBG conslog "Could not find WLAN subdev status file '$WLAN_STAT_PATH'"
+    fi
+    return $STATUS
+}
+
+# Helper to determine if firmware update is being performed.  We don't
+# want to disconnect any clients during a firmware update.
+firmware_is_updating () {
+    local FWUP_STATE="$(sysevent get fwup_state)"
+    local STATUS
+    if [ -z "$FWUP_STATE" -o "$FWUP_STATE" = "0" ]; then
+        STATUS=1
+    else
+        STATUS=0
+    fi
+    return $STATUS
+}
+
+# $1: Path to WLAN subdevice message payload
+survey_from_wlan_file () {
+    DBG conslog "survey_from_wlan_file $1"
+    if [ -f "$1" ]; then
+        local STATUS="$(jsonparse data.status < $1)"
+        if [  "$STATUS" = "connected" ]; then
+            local MAC="$(jsonparse data.sta_bssid < $1)"
+            if [ -n "$MAC" ]; then
+                # Is this device a Node?  Ignore if so.
+                if ! is_node $MAC; then
+                   DBG conslog "Requesting client survey from '$MAC'"
+                   request_client_survey -c $MAC
+                else
+                    DBG conslog "Ignoring Node $MAC"
+                fi
+            fi
+        else
+            DBG conslog "Ignoring $1 (status: '$STATUS')"
+        fi
+    else
+        DBG conslog "Error: No such file as '$1'"
+    fi
+}
+
+# Helper for dry-run support.  If FAKE is set, just display the
+# arguments (possibly explanatory text).  If not, execute them.
+# $*: Contingent command & arguments
+MAYBE () {
+    if [ $FAKE ]; then
+        DBG conslog "Dry-run mode: would have executed this:"
+        DBG conslog $*
+    else
+        $*
+    fi
+}
+
+# $1: Path to file containing survey
+process_node_survey_file () {
+    local STATUS=0
+    local SFILE="$1"
+
+    DBG conslog "$PROGNAME: process_node_survey_file('$1')"
+    # If this Node has been steered (well, invited to reconsider
+    # its' connections) recently then skip it.  We don't want to
+    # do this too often.
+    if file_newer_than ${TESS_CS_RECENTLY_STEERED_NODES}/$(basename "$SFILE") ${NODE_STEERING_COOLDOWN}; then
+         conslog "Skipping Node steering since this Node was steered recently:"
+         DBG conslog "$(ls -l ${TESS_CS_RECENTLY_STEERED_NODES}/$(basename $SFILE))"
+         STATUS=0
+    else
+        local CLIENT_UUID="$(jsonparse -f $SFILE uuid)"
+        local TARGET_BSSID
+        TARGET_BSSID="$($DECISION_ENG $DECISION_ENG_OPTS --node $SFILE)"
+        local SHOULD_STEER=$?
+        local STATUS=0
+        case $SHOULD_STEER in
+            0)
+                # Publish reconsideration message to Node
+                DBG conslog ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>> RECON ($CLIENT_UUID) !!!!"
+                conslog "Directing Node $CLIENT_UUID: reconsider backhaul connection"
+                pub_reconsider_bh $CLIENT_UUID
+                # Add to cooldown slot
+                cp $SFILE ${TESS_CS_RECENTLY_STEERED_NODES}/
+                ;;
+            1)
+                DBG conslog "Survey indicates no steering ($SHOULD_STEER)"
+                ;;
+            *)
+                DBG conslog "Error ($SHOULD_STEER) evaluating survey '$SFILE'"
+                ;;
+        esac
+    fi
+    # Return failure indicator for dry-runs to avoid FSM state change
+    [ $FAKE ] && STATUS=1
+    return $STATUS
+}
+
+# $1: Path to file containing survey
+process_client_survey_file () {
+    local SFILE="$1"
+    local CLIENT_BSSID="$(jsonparse -f $SFILE data.client_bssid)"
+    local TARGET_BSSID
+    TARGET_BSSID="$($DECISION_ENG $DECISION_ENG_OPTS $SFILE)"
+    local SHOULD_STEER=$?
+    local STATUS=0
+    case $SHOULD_STEER in
+        0)
+            # Do upcasing as separate step in case DECISION_ENG reported error
+            local TARGET_BSSID="$(echo $TARGET_BSSID | upper)"
+            DBG conslog "TARGET_BSSID: '$TARGET_BSSID', SHOULD_STEER: '$SHOULD_STEER'"
+            local CHANNEL="$(bssid_chan "$TARGET_BSSID")"
+            if [ -n "$CHANNEL" ]; then
+                local TARGET_UUID="$(mac_to_uuid $TARGET_BSSID)"
+                local CURRENT_AP_UUID="$(jsonparse -f $SFILE uuid)"
+                local CMD
+                # Is client BTM capable?  If so, use 802.11v otherwise temporary blacklist
+                if is_btm_cap $CLIENT_BSSID $CURRENT_AP_UUID; then
+                    DBG conslog "Client supports 802.11v BTM"
+                    local UC_CLIENT_BSSID="$(echo $CLIENT_BSSID | upper)"
+                    CMD="pub_nodes_steering_start $UC_CLIENT_BSSID $TARGET_BSSID $CHANNEL"
+                else
+                    DBG conslog "Client lacks 802.11v BTM"
+                    CMD="pub_nodes_temporary_blacklist $CLIENT_BSSID $TEMP_BLACKLIST_TIMEOUT start $TARGET_UUID"
+                fi
+                MAYBE $CMD
+                # fire the steer command slower so that the unit have sufficient time to process one by one
+                sleep 1
+            else
+                DBG conslog "Unable to determine AP channel for '$TARGET_BSSID'"
+            fi
+            ;;
+        1)
+            DBG conslog "Survey indicates no steering ($SHOULD_STEER)"
+            ;;
+        *)
+            DBG conslog "Error evaluating survey '$SFILE'"
+            ;;
+    esac
+    # Return failure indicator for dry-runs to avoid FSM state change
+    [ $FAKE ] && STATUS=1
+    return $STATUS
+}
+
+# $1: Path to file containing survey
+process_survey_file () {
+    local STATUS=1
+    local SFILE="$1"
+    DBG conslog "Preparing to process survey file '$SFILE'"
+    # Is this a Node or client file?  Node filenames start have the
+    # suffix ".node".  If the name minus the suffix is the same then
+    # this isn't a Node.
+    if [ "${SFILE%.node}" = "${SFILE}" ]; then
+        # Not a Node
+        process_client_survey_file "$SFILE"
+        STATUS=$?
+    else
+        # Node detected
+        if [ "$NODE_STEERING_ENABLED" = "1" ]; then
+            process_node_survey_file "$SFILE"
+            STATUS=$?
+        else
+            DBG conslog "Node steering disabled: ignoring survey '$SFILE'"
+            STATUS=0
+        fi
+    fi
+
+    return $STATUS
+}
+
+
+# Process all surveys in survey directory, optionally removing them
+# when done
+do_process_surveys () {
+    DBG conslog "$PROGNAME: Process device surveys"
+
+    # Process all client survey files
+    if [ "$CLIENT_STEERING_ENABLED" = "1" ]; then
+        local SURVEY_FILES="$(find $TESS_CS_SURVEYS -type f ! -name '*.node')"
+        for SURVEY_FILE in $SURVEY_FILES; do
+            if process_survey_file "$SURVEY_FILE"; then
+                purge_file $SURVEY_FILE
+            else
+                DBG conslog "process_survey_file failed; leaving '$SURVEY_FILE'"
+            fi
+        done
+    else
+        DBG conslog "Skipping client survey processing; client steering is disabled"
+    fi
+
+    # Process up to 1 node survey file
+    if [ "$NODE_STEERING_ENABLED" = "1" ]; then
+        # ... unless there is a pending balance check
+        if [ -f "$TESSERACT_BAL_CHECK_FLAG" ]; then
+            conslog "Skipping Node steering analysis (balance check pending)"
+        else
+            local SURVEY_FILES="$(find $TESS_CS_SURVEYS -type f -name '*.node')"
+            for SURVEY_FILE in $SURVEY_FILES; do
+                if process_survey_file "$SURVEY_FILE"; then
+                    purge_file $SURVEY_FILE
+                    break
+                else
+                    DBG conslog "process_survey_file failed; leaving '$SURVEY_FILE'"
+                fi
+            done
+        fi
+    else
+        DBG conslog "Skipping node survey processing; node steering is disabled"
+    fi
+}
+
+do_process_survey_requests () {
+    local DELAY_IN_MIN=$(secs_to_mins $SURVEY_DELAY)
+    DBG conslog "$PROGNAME: Process clients waiting to be surveyed in '$TESS_CS_WAIT_TO_SURVEY' (DELAY_IN_MIN: $DELAY_IN_MIN)"
+    DBG conslog "Waiting clients: $(ls -lt $TESS_CS_WAIT_TO_SURVEY)"
+    local READY_FILES="$(find $TESS_CS_WAIT_TO_SURVEY -type f -mmin +${DELAY_IN_MIN})"
+    DBG conslog "Ready to survey: $READY_FILES"
+    for READY_FILE in $READY_FILES; do
+        local SHORT_NAME=$(basename $READY_FILE)
+        # Avoid frequently re-surveying clients
+        if ! recently_surveyed $SHORT_NAME; then
+            local CLIENT_STATUS="$(jsonparse -f "$READY_FILE" data.status)"
+            if [ "$CLIENT_STATUS" = "connected" ]; then
+                local RRM_CAP="$(jsonparse -f "$READY_FILE" data.${TESS_JSON_RRM_CAP})"
+                if [ "$RRM_CAP" = "true" ]; then
+                    local CLIENT_BSSID="$(jsonparse data.sta_bssid < $READY_FILE)"
+                    if [ -n "$CLIENT_BSSID" ]; then
+                        if is_node $CLIENT_BSSID; then
+                            DBG conslog "Converting $READY_FILE to Node connection (it appears to be a Node)"
+                            mv $READY_FILE $TESS_CS_PENDING_NODE_CONNECTS
+                        else
+                            DBG conslog "Processing WLAN subdev file '$READY_FILE'"
+                            survey_from_wlan_file "$READY_FILE"
+                        fi
+                    else
+                        DBG conslog "Ignoring '$SHORT_NAME'; can't parse sta_bssid"
+                    fi
+                else
+                    DBG conslog "Not requesting RRM from '$SHORT_NAME': ${TESS_JSON_RRM_CAP} is '$RRM_CAP'"
+                fi
+            else
+                DBG conslog "Not requesting RRM from '$SHORT_NAME': status is '$CLIENT_STATUS'"
+            fi
+        else
+            DBG conslog "Skipping survey for '$SHORT_NAME'; it was surveyed < ${CLIENT_STEER_SURVEY_INTERVAL}s ago"
+        fi
+
+        # Remove processed file
+        purge_file $READY_FILE
+    done
+}
+
+do_process_pending_steers () {
+    local DELAY_IN_MIN=$(secs_to_mins $STEER_TIMEOUT)
+    DBG conslog "do_process_pending_steers in '$TESS_CS_PENDING_STEERS' (DELAY_IN_MIN: $DELAY_IN_MIN)"
+    DBG conslog "Total pending steers: $(ls -lt $TESS_CS_PENDING_STEERS)"
+    local READY_FILES="$(find $TESS_CS_PENDING_STEERS -type f -mmin +${DELAY_IN_MIN})"
+    DBG conslog "Expired pending steers: $READY_FILES"
+    for READY_FILE in $READY_FILES; do
+        local CLIENT_BSSID="$(jsonparse data.client_bssid < $READY_FILE | upper)"
+        if [ -n "$CLIENT_BSSID" ]; then
+            # N.B.: is_client_associated_unit has inverted logic.
+            # Success means NOT associated.
+            if is_client_associated_unit $CLIENT_BSSID; then
+                # Client not associated with this Node
+                local AP_BSSID="$(jsonparse data.ap_bssid < $READY_FILE | upper)"
+                if [ $AP_BSSID ]; then
+                    local TARGET_UUID="$(jsonparse data.ap_uuid < $READY_FILE)"
+                    if [ $TARGET_UUID ]; then
+                        DBG conslog "Processing expired pending steer for client '$CLIENT_BSSID'"
+                        DBG conslog "Issuing command pub_nodes_temporary_blacklist $CLIENT_BSSID $TEMP_BLACKLIST_TIMEOUT start $TARGET_UUID"
+                        pub_nodes_temporary_blacklist $CLIENT_BSSID $TEMP_BLACKLIST_TIMEOUT start $TARGET_UUID
+                        sleep 1
+                    else
+                        conslog "Error: Unable to determine UUID for AP '$AP_BSSID'"
+                    fi
+                else
+                    conslog "Error: Unable to parse AP BSSID from steering request"
+                fi
+            else
+                DBG conslog "No action needed; $CLIENT_BSSID already associated with this Node"
+            fi
+        else
+            DBG conslog "Ignoring $READY_FILE; can't parse client_bssid"
+        fi
+        # Remove processed file
+        purge_file $READY_FILE
+    done
+}
+
+do_process_pending_blacklists () {
+    DBG conslog "do_process_pending_blacklists"
+    local DELAY_IN_MIN=$(secs_to_mins $TEMP_BLACKLIST_TIMEOUT)
+    # Remove active blacklists after a period of time
+
+    DBG conslog "do_process_pending_blacklists in '$TESS_CS_PENDING_BLACKLISTS' (DELAY_IN_MIN: $DELAY_IN_MIN)"
+    DBG conslog "Total pending temporary blacklists: $(ls -lt $TESS_CS_PENDING_BLACKLISTS)"
+    local READY_FILES="$(find $TESS_CS_PENDING_BLACKLISTS -type f -mmin +${DELAY_IN_MIN})"
+    DBG conslog "Expired blacklists: $READY_FILES"
+    for READY_FILE in $READY_FILES; do
+        local CLIENT="$(jsonparse -f $READY_FILE data.client)"
+        local DURATION="$(jsonparse -f $READY_FILE data.duration)"
+        DBG conslog "Canceling temporary blacklist for client '$CLIENT'"
+        MAYBE pub_nodes_temporary_blacklist $CLIENT $DURATION "cancel"
+        # Remove processed file
+        MAYBE purge_file $READY_FILE
+        sleep 1
+    done
+}
+
+
+# If there are any entries in this FSM directory and ALL of them are
+# old enough, register re-survey requests for all currently on-line
+# non-Node WI-Fi clients.
+do_process_pending_node_connects () {
+    local NODE_CONNECT_TIMEOUT_IN_MINS="$(secs_to_mins $NODE_CONNECT_TIMEOUT)"
+    DBG conslog "do_process_pending_node_connects in '$TESS_CS_PENDING_NODE_CONNECTS' (DELAY_IN_MIN: $NODE_CONNECT_TIMEOUT_IN_MINS)"
+    local NODE_CONNECTS="$(find $TESS_CS_PENDING_NODE_CONNECTS -type f)"
+
+    if [ -n "$NODE_CONNECTS" ]; then
+        for NODE_CONNECT in $NODE_CONNECTS; do
+            if ! file_is_ripe $NODE_CONNECT $NODE_CONNECT_TIMEOUT_IN_MINS; then
+                # 1 or more unripe requests; abort for now
+                DBG conslog "do_process_pending_node_connects: Found an unripe file ($NODE_CONNECT); aborting"
+               return 1
+            fi
+        done
+        DBG conslog "do_process_pending_node_connects: All node-connect notifications are ripe"
+        # At this point we have 1 or more Node (re)connects and all
+        # are ripe.  Time to generate (re)survey requests for any
+        # online non-Node clients.
+        local ALL_CLIENTS=$(find ${WLAN_MSG_DIR}/*/* -name status)
+        # Create survey requests for non-Node online clients
+        DBG conslog "do_process_pending_node_connects: evaluating connect files '$ALL_CLIENTS'"
+        for CLIENT_FILE in $ALL_CLIENTS; do
+            if [ -n "$CLIENT_FILE" ]; then
+                local MAC=$(jsonparse data.sta_bssid < $CLIENT_FILE)
+                # Don't bother if we can't extract the client MAC
+                if [ -n "$MAC" ]; then
+                    DBG conslog "MAC for client: '$MAC'"
+                    # Skip if device is a Node
+                    if ! is_node $MAC; then
+                        local STATUS="$(jsonparse data.status < $CLIENT_FILE)"
+                        # No point continuing if device no online (connected)
+                        if [  "$STATUS" = "connected" ]; then
+                            local DEST_FILE="$TESS_CS_WAIT_TO_SURVEY/$MAC"
+                            if ! cp $CLIENT_FILE $DEST_FILE; then
+                                conslog "Error copying $CLIENT_FILE to $DEST_FILE"
+                            fi
+                        else
+                            DBG conslog "Skipping offline client $MAC"
+                        fi
+                    fi
+                fi
+            else
+                conslog "do_process_pending_node_connects: Error: got empty CLIENT_FILE"
+            fi
+        done
+
+        # We also take this opportunity to direct all Slave Nodes to submit fresh neighbor reports
+        mk_infra_payload -t cmd | pub_generic "$(omsg-conf -s REPORT-NEIGHBORS)"
+
+        MAYBE purge_file $NODE_CONNECTS
+    else
+        DBG conslog "do_process_pending_node_connects: no node connection notifications found"
+    fi
+}
+
+do_process_local_installed_blacklists() {
+    DBG conslog "do_process_local_installed_blacklists"
+    DBG conslog "local blacklisted client: $(ls -lt $TESS_CS_LOCAL_INSTALLED_BLACKLISTS)"
+
+    local ALL_CLIENT_FILES=$(find $TESS_CS_LOCAL_INSTALLED_BLACKLISTS -type f)
+    [ -z "$ALL_CLIENT_FILES" ] && return 1
+
+    local CLIENT_FILE
+    local client
+    local duration
+    local start_time
+    local expire_time
+
+    for CLIENT_FILE in $ALL_CLIENT_FILES; do
+
+        client="$(jsonparse -f $CLIENT_FILE data.client)"
+        duration="$(jsonparse -f $CLIENT_FILE data.duration)"
+        if [ -z "$duration" ]; then
+            DBG conslog "duration element is missing, remove the blacklist"
+            remove_client_from_blacklist_unit "$client"
+            MAYBE purge_file $CLIENT_FILE
+            continue
+        fi
+        start_time=$(stat -c %X "$CLIENT_FILE")
+        expire_time=$(expr "$start_time" + "$duration")
+
+        if [ "$(date +%s)" -lt "$expire_time" ]; then
+            DBG conslog "blacklist for $client has not expired"
+            continue
+        fi
+        DBG conslog "blacklist for $client has expired, clean up the blacklist"
+        remove_client_from_blacklist_unit "$client"
+        MAYBE purge_file $CLIENT_FILE
+
+    done
+    return 0
+}
+
+fsm_tick () {
+    if_op $OP_PROCESS_PENDING_NODE_CONNECTS && do_process_pending_node_connects
+    if_op $OP_PROCESS_SURVEY_REQUESTS       && do_process_survey_requests
+    if_op $OP_PROCESS_SURVEYS               && do_process_surveys
+    if_op $OP_PROCESS_PENDING_STEERS        && do_process_pending_steers
+    if_op $OP_PROCESS_PENDING_BLACKLISTS    && do_process_pending_blacklists
+    if_op $OP_PROCESS_LOCAL_INSTALLED_BLACKLISTS    && do_process_local_installed_blacklists
+}
+
+die () {
+    echo "${PROGNAME}|$(date -u +'%F %T'): $*"
+    exit 1
+}
+
+########################################################################
+#                        Mutual exclusion zone
+# We don't want to run multiple simultaneous copies so use a file lock.
+(
+    if firmware_is_updating; then
+        DBG conslog "$PROGNAME: Skipping client-steering checks: firmware update in progress"
+    else
+        flock -n 9 || die "Skipping Tesseract FSM job (it is already running)"
+        fsm_tick
+    fi
+) 9>$TESSERACT_LOCK_FILE
+#
+########################################################################

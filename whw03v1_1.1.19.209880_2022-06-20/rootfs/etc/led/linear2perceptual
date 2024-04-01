@@ -1,0 +1,30 @@
+#!/usr/bin/lua
+
+local function LinearToPerceptual(max, lpercent)
+	local linearizer = 3
+	local result = 0
+
+	if ( 0 >= tonumber(lpercent) ) then
+		return 0
+	end
+
+	if ( 100 <= tonumber(lpercent) ) then
+        return max
+	end
+
+    local lval = max * lpercent / 100
+    local rval = (math.log(2) / math.log((max + linearizer)/linearizer)) *  max
+
+    result = (math.pow(2, (lval / rval)) * linearizer) - linearizer
+    return math.floor(result)
+end
+
+if ( #arg ~= 2 ) then
+    print("Usage: ".. arg[0] .. " [maximum] [percent]")
+    print("Due to the non-linear perception of LED brightness of the human eye, we are using a non-linear equation when fading the LED.")
+    print(" e.g.  ".. arg[0] .. " 255 80")
+    return
+end
+
+print(LinearToPerceptual(arg[1], arg[2]))
+

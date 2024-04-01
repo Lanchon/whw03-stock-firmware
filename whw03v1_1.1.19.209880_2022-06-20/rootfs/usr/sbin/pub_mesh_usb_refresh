@@ -1,0 +1,32 @@
+#!/bin/sh
+#
+# Copyright (c) 2019, Belkin Inc. All rights reserved.
+#
+# Publish MESH-USB eject command to a MQTT topic
+
+PROG_NAME="$(basename $0)"
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+MODE=$(syscfg get smart_mode::mode)
+PUB_TOPIC="network/$1/MESHUSB/refresh"
+
+if [ "$MODE" != "2" ];then
+    echo "$PROG_NAME: not in master mode, exit"
+    exit
+fi
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   STATE    : $STATE"
+fi
+
+[ $DEBUG ] && echo "${PROG_NAME}: publishing USB storage refresh command."
+
+mk_infra_payload \
+    -t status | \
+    publish "$PUB_TOPIC"

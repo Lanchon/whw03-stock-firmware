@@ -1,0 +1,33 @@
+#!/bin/sh
+
+TIMEOUT=120
+CURRENT=0
+REQUEST=$(sysevent get fwup_queue)
+
+Debug()
+{
+#   return
+    echo "$@" >> /dev/console
+}
+
+if [ -z "$REQUEST" ]; then
+    exit
+fi
+
+while [ $CURRENT -le $TIMEOUT ]; do
+    
+    if pidof fwupd > /dev/null || pidof update_nodes > /dev/null; then
+        
+        CURRENT=$(expr $CURRENT + 1)
+        sleep 1
+    else 
+        Debug
+        Debug "Running update ($REQUEST)"
+        Debug
+
+        sysevent set fwup_queue
+        sysevent set update_firmware_now "$REQUEST"
+
+        break
+    fi
+done

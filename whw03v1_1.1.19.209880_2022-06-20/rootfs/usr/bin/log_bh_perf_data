@@ -1,0 +1,71 @@
+#!/bin/sh
+#
+# Log backhaul performance data
+#
+# Copyright (c) 2017, Belkin Inc. All rights reserved.
+
+PROG_NAME="$(basename $0)"
+
+BASE="bh-performance"
+Q_FILE="/tmp/$BASE"
+LOCK_FILE="/var/lock/$BASE"
+MAX_RECORDS=50
+
+. /etc/init.d/queue_common.sh
+
+usage () {
+    printf "Usage:\n"
+    printf "    \t%s [-h] [-d] [-F] -R{RATE} -D{DELAY} -J{JITTER}\n" $PROG_NAME
+    printf "Where:\n"
+    printf "  -F\tOutput path to queue file\n"
+    printf "  -R{rate}\tRate (in Mb/s)\n"
+    printf "  -D{delay}\tRound-trip delay in ms\n"
+    printf "  -J{JITTER}\tJitter in ms\n"
+    printf "  -d\tDebug mode.\n"
+    printf "  -h\tThis help\n"
+    printf "Note: -D, -J and -R are all required.\n"
+}
+
+while getopts ":FR:D:J:dh" opt;do
+    case $opt in
+        R)  RATE="$OPTARG" ;;
+        D)  DELAY="$OPTARG" ;;
+        J)  JITTER="$OPTARG" ;;
+        d)  DEBUG=1 ;;
+        F)  echo $Q_FILE ; exit 0 ;;
+        h)
+            usage
+            exit 0
+            ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+if [ -z "$RATE" -o -z "$DELAY" -o -z "$JITTER" ]; then
+    errout "$PROG_NAME: Missing parameters"
+    usage
+fi
+
+# $1 rate
+# $2 delay
+# $3 jitter
+datum () {
+    local NOW="$(date -u '+%FT%TZ')"
+    local SECS="$(date +%s)"
+    printf "%s,%s,%f,%f,%f" "$NOW" "$SECS" $1 $2 $3
+}
+
+RECORD="$(datum $RATE $DELAY $JITTER)"
+debout "New record: '$RECORD'"
+
+capped_enqueue $MAX_RECORDS "$RECORD"

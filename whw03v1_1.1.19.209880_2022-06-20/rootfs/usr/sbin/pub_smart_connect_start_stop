@@ -1,0 +1,34 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish Smart Connect start & stop status to an MQTT topic
+#
+# To see the incoming data on the broker, use this command:
+#   $ mosquitto_sub -t /network/+/BH/status -d
+#
+DEBUG=1
+
+
+# Set common values
+source /etc/init.d/sub_pub_funcs.sh
+
+STATUS="${1:-start}"
+
+PUB_TOPIC="$(omsg-conf -f /etc/subscriber.d/slave.subs setup_${STATUS})"
+validate PUB_TOPIC
+
+if [ -z "$PUB_TOPIC" ]; then
+    echo "Error: $0 could not process status $STATUS" > /dev/console
+fi
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   STATUS   : $STATUS"
+fi
+
+omsg-publish -z "$PUB_TOPIC"

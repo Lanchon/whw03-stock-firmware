@@ -1,0 +1,65 @@
+#!/bin/sh
+#
+# Copyright (c) 2017, Belkin Inc. All rights reserved.
+#
+# Request whichever Node is connected to the specified client request
+# a neighbor survey from it and send the results back to the master
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PROGNAME="$(basename $0)"
+PUB_TOPIC="$(omsg-conf -m WLAN_SEND_CLIENT_SURVEY)"
+
+usage() {
+    cat <<EOF
+$PROGNAME requests whichever Node is connected to the
+specified client request a neighbor survey from it and send the
+results back to the master
+Usage:
+        $PROGNAME {options} {FILE}
+Where {options} are one or more of:
+  -c{bssid}   Client of interest
+  -h          This help
+EOF
+}
+
+while getopts ":dc:h" opt;do
+    case $opt in
+        d)  DEBUG=1 ;;
+        c)  CLIENT=$OPTARG ;;
+        h) usage ; exit 0 ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+if [ -z "$CLIENT" ]; then
+    errout "Missing required client parameter"
+    usage
+    exit 1
+fi
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   CLIENT   : $CLIENT"
+    echo "   UUID     : $UUID"
+fi
+
+mk_infra_payload \
+    -t status \
+    -u "$UUID" \
+    -s "client_bssid:$CLIENT" | publish "$PUB_TOPIC"

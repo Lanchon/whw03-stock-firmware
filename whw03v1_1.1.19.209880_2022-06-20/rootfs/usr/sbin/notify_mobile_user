@@ -1,0 +1,183 @@
+#!/usr/bin/lua
+--
+-- Copyright (c) 2017, Belkin Inc. All rights reserved.
+--
+-- Send simple text notification to all user mobile devices (iOS and
+-- Android).  Uses cloud API.
+--
+local cli      = require "cliargs"
+local hdk      = require 'libhdklua'
+local json     = require 'libhdkjsonlua'
+local platform = require 'platform'
+local sysctx   = require 'libsysctxlua'
+local dev      = require 'device'
+local cloud    = require 'cloud'
+
+local nutil    = require 'nodes.util'
+local nucloud  = require 'nodes.util.cloud'
+
+local SC = sysctx.new()
+local opts     = {}
+
+local NODE_TYPES = {
+   MASTER = "master",
+   SLAVE  = "slave"
+}
+
+local DEFAULT_FILE = "<stdin>"
+
+-- Harvest some system information
+local prog_name = string.match( arg[0], ".*/(.*)" )
+
+function gather_sys_data()
+   local xhost            = dev.getCloudHost(SC)
+   local xdeviceUUID      = SC:get_device_uuid()
+   return {
+      ownedsc         = SC,
+      host            = xhost,
+      deviceUUID      = xdeviceUUID,
+      deviceID        = hdk.uuid( xdeviceUUID ),
+      networkID       = SC:get_xrac_owned_network_id() or "",
+      networkPassword = SC:get_xrac_owned_network_password() or "",
+      eventTime       = platform.getCurrentLocalTime(SC),
+      verifyHost      = dev.getVerifyCloudHost(SC),
+   }
+end
+
+
+--! @brief Make payload.
+--! Create a cloud API compliant payload based on the off-line message
+--! payload from the Slave
+--! @param slave_data A table containing the JSON MQTT message data
+function make_event_payload( payload )
+   return json.stringify{ text = payload }
+end
+
+-- For debug mode.  Just dump out the data we harvested above
+function diagnostic_dump( sys )
+   nutil.diagnostic_dump( sys, {
+      "deviceUUID", "eventTime", "host", "networkID",
+      "networkPassword", "verifyHost"
+   })
+end
+
+
+function parse_args()
+   -- Set up command line options
+   cli:set_name( prog_name )
+   cli:set_description( 'Generate cloud notification for new unconfigured Node' )
+   cli:option( "-f, --file=FILE", "Path to message text",    DEFAULT_FILE )
+   cli:flag(   "-d, --debug",     "Show debugging output",   false    )
+   cli:flag(   "-n, --dry-run",   "No cloud communication",  false    )
+   cli:flag(   "-v, --verbose",   "Be verbose",              false    )
+   cli:flag(   "-h, --help",      "This help"                         )
+   local args, err = cli:parse()
+
+   if not args and err then
+      print( err )
+      os.exit(1)
+   else
+      local opts = {
+         debug   = not not args.debug,
+         verbose = not not args.verbose,
+         file    = args.file,
+         dry_run = not not args["dry-run"]
+      }
+      -- If debug is set, dump out the options now
+      if opts.debug then
+         print( cli.name .. " options:" )
+         for k,v in pairs( opts ) do
+            print( string.format( "%12s: (%s)", k, tostring( v )))
+         end
+      end
+      return opts
+   end
+end
+
+--! @brief Load notification text.
+--! @param file File name of payload file or file object to read
+--! @return On success: paylaod data as a table & nil
+--!         On error:   nil, error message string
+function get_message( file )
+   local data = nil
+   local storage,err = nil,nil
+   local closeit = false
+   if file then
+      if file == DEFAULT_FILE then
+         if opts.debug then print( "Reading from "..file ) end
+         storage = io.stdin
+      elseif type( file ) == 'string' then
+         storage,err = io.open( file, "r" )
+         if not storage then
+            error( "Error opening '"..file.."':"..err )
+         end
+         closeit = true
+      else
+         error "Unknown input type"
+      end
+
+      data = storage:read "*all"
+      if closeit then storage:close() end
+      if data and type(data) == 'string' then
+         data = nutil.chomp( data )
+      end
+   else
+      error "NIL input file"
+   end
+   return data
+end
+
+local function fail( err )
+   print( prog_name .. " Error: " .. err )
+   os.exit( 1 )
+end
+
+function post_offline_event( sys, event_type, payload )
+   local err, id = true, "Unknown"
+   if opts.dry_run then
+      print( "Would call cloud.createEvent( ", sys.host, sys.networkID,
+             sys.networkPassword, tostring( sys.deviceID ),
+             event_type,
+             sys.eventTime, sys.verifyHost,
+             payload, ")" )
+      err, id = false, "dry-run"
+   else
+      err, id = cloud.createEvent( sys.host, sys.networkID,
+                                   sys.networkPassword, tostring( sys.deviceID ),
+                                   event_type,
+                                   sys.eventTime, sys.verifyHost,
+                                   payload )
+   end
+   return err, id
+end
+
+function _main()
+   opts = parse_args()
+   sys = gather_sys_data()
+   if opts.debug then
+      print( "Dumping system data..." )
+      diagnostic_dump( sys )
+   end
+
+   local event_payload = make_event_payload( get_message( opts.file ))
+   if opts.debug then
+      print( string.format( "Proposed payload:\n%s\n", event_payload ))
+   end
+   local err, id = nucloud.post_node_event( sys,
+                                            nucloud.EVENT_TYPES.ROUTER_NOTIFICATION,
+                                            event_payload )
+   if err then fail( err ) end
+   if opts.verbose then
+      print( "Cloud call succeeded, event ID " .. tostring( id ))
+   end
+
+   if opts.verbose then
+      print( "Done" )
+   end
+end
+
+local ok, err = pcall( _main )
+if not ok then
+   print( prog_name .. " error: " .. tostring( err ))
+   SC:rollback()
+end

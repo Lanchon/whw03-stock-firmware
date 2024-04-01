@@ -1,0 +1,118 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+-- Copyright (c) 2019, Belkin Inc. All rights reserved.
+-- Helper command to perform special post-processing of Wi-Fi client
+-- neighbor reports (802.11K RRM).  Called from command pub_client_survey.
+
+cli   = require 'cliargs'
+nutil = require 'nodes.util'
+JSON  = require 'libhdkjsonlua'
+
+debout = nutil.debout
+errout = nutil.errout
+
+-- Keep prog_name global for use in error messages
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+-- Keep opts global for access by external modules
+opts = {} -- This needs to be global
+
+-- Parse command line using cliargs package.
+function parse_args()
+   -- Set up command line options
+   cli:set_name( prog_name )
+   cli:set_description 'Average 802.11K RRM output'
+   cli:flag( "-d,--debug",   "Show debugging output", false  )
+   cli:flag( "-h,--help",    "This help"                     )
+   local args, err = cli:parse()
+
+   if not args and err then
+      errout( err )
+      os.exit( 1 )
+   else
+      return { debug = not not args.debug }
+   end
+end
+
+function _main()
+   local status = 1
+   opts = parse_args()
+   local raw_data = io.stdin:read( "*all" )
+   local function round(x) return math.floor( tonumber(x) + 0.5 ) end
+   -- Wrap raw data in array if needed
+   if raw_data:sub(1,1) ~= '[' then
+      raw_data = "["..raw_data.."]"
+   end
+   debout( "raw_data: %s", raw_data )
+   local cooked_data, err = JSON.parse( raw_data )
+   local count = 0
+   if cooked_data then
+      local intermediate = {}
+      debout( "Data parsed, %d records detected.", #cooked_data )
+      for i,irec in ipairs( cooked_data ) do
+         local new = false
+         debout( "%02d: macAddress: '%s' rcpi: %f channel: %d",
+                i,
+                irec.macAddress,
+                irec.rcpi,
+                irec.channel )
+         local entry = intermediate[irec.macAddress]
+         if entry then
+            -- Existing entry
+            table.insert( entry.rcpi_list, irec.rcpi )
+         else
+            intermediate[irec.macAddress] = {
+               macAddress = irec.macAddress,
+               rcpi_list = { irec.rcpi },
+               channel = irec.channel
+            }
+            count = count + 1
+         end
+      end
+      debout( "Data coalesced, %d unique addresses.", count )
+      -- Calculate averages
+      local avg = {}
+      for k,v in pairs( intermediate ) do
+         local rcpi_count = #v.rcpi_list
+         if rcpi_count == 0 then
+            v.rcpi = 0
+         elseif rcpi_count == 1 then
+            v.rcpi = v.rcpi_list[1]
+         elseif rcpi_count > 1 then
+            local sum = 0
+            for _,rcpi in ipairs( v.rcpi_list ) do
+               sum = sum + rcpi
+            end
+            v.rcpi = round( sum / rcpi_count )
+         end
+         v.rcpi_list = nil
+         table.insert( avg, v )
+      end
+
+      -- Special case: if there are no entries force text output to be
+      -- "[]".  This is because stringify() can't tell whether to
+      -- generate an empty object or array for an empty table.
+      if #avg > 0 then
+         print( JSON.stringify( avg ))
+      else
+         print "[]"
+      end
+      status = 0
+   else
+      error( tostring( err ))
+   end
+   return status
+end
+
+
+status = 0
+ok, result = pcall( _main )
+
+if not ok then
+   errout( "%s error: '%s'", prog_name, tostring( result ))
+   status = 1
+else
+   status = result
+end
+
+os.exit( status )

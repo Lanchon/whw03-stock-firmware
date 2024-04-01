@@ -1,0 +1,129 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Start a Mosquitto subscription process with a last will.  This will
+# trigger a message in the broker if the connection is lost.
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+source /etc/init.d/mosquitto_common.sh
+
+PROGNAME=$(basename $0)
+
+usage() {
+    printf "Usage:\n"
+    printf "        %s {options}\n" $PROGNAME
+    echo "Where {options} are one or more of:"
+    printf "  -c\tCancel existing will\n"
+    printf "  -d\tDebug mode\n"
+    printf "  -h:\tThis help\n"
+    printf "  -t\tTest mode.  Immediately send offline report\n"
+}
+
+while getopts ":cdht" opt;do
+    case $opt in
+        c) CANCEL_MODE=1 ;;
+        d) DEBUG=1 ;;
+        h) usage ; exit 0 ;;
+        t) TEST_MODE=1 ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+PUB_TOPIC="$(omsg-conf -m LAST-WILL | sed "s/+/$TOPIC_UUID/")"
+validate PUB_TOPIC
+
+CANCEL_TOPIC="CANCEL_WILL/$UUID"
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   DAEMON   : $DAEMON_MODE"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   TEST     : $TEST_MODE"
+    echo "   TOPIC    : $PUB_TOPIC"
+fi
+
+if [ "$MODE" = "2" ];then
+    MODE="master"
+elif [ "$MODE" = "1" ];then
+    MODE="slave"
+else
+    MODE="unconfigured"
+fi
+
+IP="$(ifconfig br0 | grep "inet addr" | awk -F: '{print $2}' | awk '{print $1}')"
+validate IP
+
+MSG="$(mk_infra_payload \
+    -t status \
+    -u "$UUID" \
+    -s "serialNumber:$(syscfg get device::serial_number)" \
+    -s "mode:$MODE" \
+    -s "model:$(syscfg get device::modelNumber)" \
+    -s "hostname:$(syscfg get hostname)")"
+
+last_will() {
+    local PID="$(pgrep mosquitto_sub)"
+    local PORT=$HOST_PORT
+    local SEC_PORT="$(syscfg get omsg::secport)"
+    # Don't start more than one.  Hopefully no other unrelated instances
+    # of mosquitto_sub are running.
+    if [ -z "$PID" ]; then
+        local OPTS='-C 1                      \
+                    -p $PORT                  \
+                    -h $HOST_ADDR             \
+                    -t $CANCEL_TOPIC          \
+                    -i "offline-will-${UUID}" \
+                    --will-topic "$PUB_TOPIC" \
+                    --will-payload "$MSG"'
+        local PSK_ID
+        local PSK
+        local SEC_OPTS
+        if [ $SEC_PORT ]; then
+            PORT=$SEC_PORT
+            PSK_ID="$(syscfg get omsg::psk_id)"
+            PSK="$(syscfg get omsg::psk)"
+            if [ -z "$PSK" -o -z "$PSK_ID" ]; then
+                echo "$PROGNAME: Can't get security credentials"
+                exit 1
+            fi
+            SEC_OPTS='--psk-identity "$PSK_ID" \
+                      --psk "$PSK"             \
+                      -u "$OMSG_USER"          \
+                      -P "$OMSG_PW"'
+            [ $DEBUG ] && echo "SEC_OPTS: $SEC_OPTS"
+        fi
+        eval "nohup mosquitto_sub ${OPTS} ${SEC_OPTS}" >&/dev/null  &
+    else
+        echo "$0: Ignoring, last Will already running" > /dev/console
+    fi
+}
+
+send_direct() {
+    echo $MSG | publish "$PUB_TOPIC"
+}
+
+if [ "$CANCEL_MODE" ]; then
+    echo "stop" | publish "$CANCEL_TOPIC"
+else
+    if [ "$TEST_MODE" ]; then
+        [ "$DEBUG" ] && echo "Sending report directly"
+        send_direct
+    else
+        [ "$DEBUG" ] && echo "Setting last will"
+        last_will
+    fi
+fi

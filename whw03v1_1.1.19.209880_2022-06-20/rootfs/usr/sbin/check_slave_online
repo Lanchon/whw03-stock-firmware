@@ -1,0 +1,137 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# check whether the device with the input bssid is connected or not.
+
+VAR=$1
+SERVICE='check_slave_online'
+
+
+CHECK_BSSID()
+{
+echo "checking bssid=$VAR.."
+
+ifconfig | grep "$VAR" -i >/dev/null
+if [ $? -eq 0 ];then
+	echo "the bssid is self's"
+	exit 0
+fi
+
+FILELIST=` grep "\"sta_bssid\": \"$VAR\"" /tmp/msg/WLAN/* -ri | awk -F':' '{print $1}' `
+if [ -z "$FILELIST" ] ; then
+	echo "error: no data found in /tmp/msg/WLAN"
+	exit 1
+fi
+
+FILELIST=` echo $FILELIST | sed 's/\n/ /g' `
+#echo "$FILELIST"
+
+for file in $FILELIST; do
+	echo "in $file"
+	grep '"status": "connected"' $file > /dev/null
+	if [ $? -eq 0 ];then
+		echo "status: connected"
+		exit 0
+	fi
+	grep '"status": "disconnected"' $file > /dev/null
+	if [ $? -eq 0 ];then
+		echo "status: disconnected"
+		exit 1
+	fi
+done
+
+echo "error: no data found in /tmp/msg/WLAN"
+exit 1
+}
+
+CHECK_UUID()
+{
+echo "checking uuid=$VAR.."
+
+SELF_UUID=`syscfg get device::uuid`
+echo $VAR | grep "$SELF_UUID" -i >/dev/null
+if [ $? -eq 0 ];then
+	echo "the UUID is self's"
+	exit 0
+fi
+
+FILELIST=` grep "\"uuid\": \"$VAR\"" /tmp/msg/WLAN/* -ri | awk -F':' '{print $1}' `
+if [ -z "$FILELIST" ] ; then
+	echo "error: no data found in /tmp/msg/WLAN"
+	exit 1
+fi
+
+FILELIST=` echo $FILELIST | sed 's/\n/ /g' `
+#echo "$FILELIST"
+
+for file in $FILELIST; do
+	echo "in $file"
+	grep '"status": "connected"' $file > /dev/null
+	if [ $? -eq 0 ];then
+		echo "status: connected"
+		exit 0
+	fi
+	grep '"status": "disconnected"' $file > /dev/null
+	if [ $? -eq 0 ];then
+		echo "status: disconnected"
+		exit 1
+	fi
+done
+
+echo "error: no data found in /tmp/msg/WLAN"
+exit 1
+}
+
+tolower () {
+    tr '[A-Z]' '[a-z]'
+}
+
+# For each Node BH status file that is active (status = "up"), output
+# a tuple consisting of the {UUID}={MAC}.  For Wi-Fi connected Nodes
+# the MAC is the Node station BSSID.  So if there are 2 Nodes whose
+# UUIDs are "a-b-c-d" and "e-f-g-h" and whose BSSIDs are
+# 11:22:33:44:55:66 and 33:44:55:66:77:88, then the output would be:
+# a-b-c-d=11:22:33:44:55:66 e-f-g-h=33:44:55:66:77:88
+PrintOnlineSlave()  {
+    local BH_DIR="$(syscfg get subscriber::file_prefix)/BH"
+    local STATUS=1
+    for BH_FILE_PATH in $BH_DIR/*/status; do
+        local STATE="$(jsonparse data.state < $BH_FILE_PATH)"
+        if [ "$STATE" = "up" ]; then
+            local UUID="$(jsonparse uuid < $BH_FILE_PATH)"
+            local CONNECTION_TYPE="$(jsonparse data.type < $BH_FILE_PATH | tolower)"
+            local MAC
+            if [ "$CONNECTION_TYPE" = "wired" ]; then
+                MAC="$(jsonparse data.mac < $BH_FILE_PATH)"
+            else
+                MAC="$(jsonparse data.sta_bssid < $BH_FILE_PATH)"
+            fi
+            if [ -n "$UUID" -a -n "$MAC" ]; then
+                echo -n "$UUID=$MAC "
+                STATUS=0
+            fi
+        fi
+    done 2>/dev/null
+    [ $STATUS -eq 0 ] && echo ""
+    exit $STATUS
+}
+
+if [ "$VAR" == "list" ];then
+	PrintOnlineSlave
+else
+	echo "$VAR" | egrep "^bssid=[0-9a-zA-Z:]{17}$" >/dev/null
+	if [ $? -ne 0 ];then
+		echo "$VAR" | egrep "uuid=" >/dev/null
+		if [ $? -eq 0 ];then
+			VAR=`echo $VAR | sed 's/uuid=//' `
+			CHECK_UUID
+		fi
+	else
+		VAR=`echo $VAR | sed 's/bssid=//' `
+		CHECK_BSSID
+	fi
+fi
+
+echo "error: wrong input, $SERVICE bssid=*/uuid=*/list"
+exit 1

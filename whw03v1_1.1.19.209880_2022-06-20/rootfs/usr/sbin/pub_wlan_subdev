@@ -1,0 +1,272 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish /WLAN/subdev from the slave to the master
+# usage 1: pub_wlan_subdev  client_mac  [ap_bssid]  [client_status:connected/disconnected]
+#          publish a specified client
+# usage 2: pub_wlan_subdev
+#          publish all clients
+
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PROGNAME="$(basename $0)"
+STAMAC=$1
+APBSSID=$2
+INT=$3
+STATUS=$4
+BAND="$5"
+CLIENT_RSSI=$6
+GUESTCLIENT=$7
+CLIENT_MCS=$8
+
+PUB_TOPIC="network/${TOPIC_UUID}/WLAN/subdev/${STAMAC//:/-}/status"
+
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BAND     : $BAND"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   STATUS   : $STATUS"
+fi
+
+
+required_params_validate () {
+    local RESULT=0
+
+    # These all need to be set
+    multi_soft_validate APBSSID BAND STAMAC INT GUESTCLIENT STATUS ; RESULT=$?
+
+    if [ $RESULT -eq 0 -a "$STATUS" = "connected" ]; then
+        # In addition, these must be present if connected
+        multi_soft_validate CLIENT_RSSI MODE CLIENT_PHYRATE ; RESULT=$?
+    fi
+    return $RESULT
+}
+
+# Helper function for functions using wifitool to determine client
+# capabilities.  Executes one of the "..._sta_list" functions of
+# wifitool and checks the output for the desired MAC.
+# $1: interface (e.g. ath0)
+# $2: MAC
+# $3: Capability (e.g. btm, rrm)
+client_capable () {
+    local STATUS
+    if wifitool ${1} ${3}_sta_list | grep -i ${2} >/dev/null; then
+        STATUS=0
+        echo "true"
+    else
+        STATUS=1
+        echo "false"
+    fi
+    return $STATUS
+}
+
+# Determine if specific client attached to specified interface is
+# capable of 802.11k RRM operations.  In this context, RRM stands for
+# Remote Radio Measurement.
+# $1: interface (e.g. ath0)
+# $2: MAC
+btm_capable () {
+    client_capable "$1" "$2" btm
+}
+
+
+# Determine if specific client attached to specified interface is
+# capable of 802.11v BTM operations.  In this context, BTM stands for
+# BSSI Transition Management.
+# $1: interface (e.g. ath0)
+# $2: MAC
+rrm_capable () {
+    client_capable "$1" "$2" rrm
+}
+
+# Get the logical wireless AP interface name (wl0|wl1|wl2) for a given VAP.
+vap_to_wl_interface() {
+    local vap=$1
+    local vap_type
+
+    if [ "$GUESTCLIENT" == "true" ]; then
+        vap_type=guest
+    else
+        vap_type=user
+    fi
+    for wl in $(syscfg get configurable_wl_ifs); do
+        if [ "$vap" == "$(syscfg get ${wl}_${vap_type}_vap)" ]; then
+            echo -n $wl
+            return
+        fi
+    done
+
+    echo -n "unknown"
+}
+
+#----------------------------------PublishSingleCLient-----------------------------------
+PublishSingleCLient()
+{
+    CLIENT_MAC="$STAMAC"
+    CLIENT_PHYRATE=''
+    MODE=''
+
+    PHYSICAL_IF_LIST=`syscfg get lan_wl_physical_ifnames`
+    CHECKLIST="" 
+    for PHY_IF in $PHYSICAL_IF_LIST; do
+        WL_SYSCFG=`syscfg get ${PHY_IF}_syscfg_index`
+        CHECKLIST="${CHECKLIST} ${PHY_IF}"
+
+        if [ "`syscfg get guest_enabled`" = "1" ] && [ "`syscfg get ${WL_SYSCFG}_guest_enabled`" = "1" ] ; then
+            CHECKLIST="${CHECKLIST} `syscfg get ${WL_SYSCFG}_guest_vap`"
+        fi
+
+        if [ "`syscfg get ${WL_SYSCFG}_security_mode`" = "wpa3-open" ] ; then
+            CHECKLIST="${CHECKLIST} `syscfg get ${WL_SYSCFG}_owe_vap`"
+        fi
+    done
+
+    for VIR_IF in $CHECKLIST; do
+        STANUM="`wlanconfig ${VIR_IF} list sta 2>/dev/null | grep "$CLIENT_MAC" | wc -l`"
+        if [ "${STANUM}" = "1" ] ; then
+            CLIENT_PHYRATE="`wlanconfig ${VIR_IF} list sta 2>/dev/null | grep "$CLIENT_MAC" | awk '{print $5}'`"
+            if [ -z $APBSSID ] ;then
+                APBSSID="`ifconfig ${VIR_IF} 2>/dev/null | grep HWaddr | awk '{print $5}'`"
+            fi
+            break
+        fi
+    done
+
+    if [ "$STATUS" = "connected" ]; then
+        MODE=`wlanconfig ${INT} list sta 2>/dev/null | grep "$STAMAC" | sed 's/IEEE80211_MODE_/&\n/' | awk NR==2'{print $1}'`
+    else
+        CLIENT_PHYRATE=''
+    fi
+
+    local BTM_CAP="$(btm_capable ${INT} ${STAMAC})"
+    local RRM_CAP="$(rrm_capable ${INT} ${STAMAC})"
+    
+    if required_params_validate; then
+        mk_infra_payload \
+            -t status \
+            -u "$UUID" \
+            -s "ap_bssid:${APBSSID}" \
+            -s "band:$BAND" \
+            -s "sta_bssid:${STAMAC}" \
+            -s "rssi:${CLIENT_RSSI}" \
+            -s "interface:${INT}" \
+            -s "wl_interface:$(vap_to_wl_interface $INT)" \
+            -r "guest:${GUESTCLIENT}" \
+            -s "mode:${MODE}" \
+            -s "phyrate:${CLIENT_PHYRATE}" \
+            -s "status:${STATUS}" \
+            -s "btm_cap:$BTM_CAP" \
+            -s "rrm_cap:$RRM_CAP" \
+            -s "mcs:${CLIENT_MCS}" | \
+            publish "$PUB_TOPIC"
+    else
+        ulog $PROGNAME STATUS "Skipping transmission due to missing parameters"
+    fi
+}
+
+
+#----------------------------------PublishAllClients-----------------------------------
+
+PublishClientOnInterface()
+{
+    INT=$1
+    RADIO_TYPE=$2
+    GUESTCLIENT=$3
+    WL_INT=$4
+
+    STANUM=`wlanconfig ${INT} list sta | sed "1d" | wc -l`
+    if [ "${STANUM}" = "0" ] ; then
+        return
+    fi
+
+    if [ "$RADIO_TYPE" = "5GHz" ] ;then
+        BAND='5G'
+    else
+        BAND='2.4G'
+    fi
+
+    INDEX=1
+    while [ ${INDEX} -le ${STANUM} ]
+    do
+        CNT=`expr $INDEX + 1`
+        CNT_MCS=`expr $CNT + 2`
+        INDEX=`expr $INDEX + 11`
+
+        CLIENT_RSSI="`wlanconfig ${INT} list sta 2>/dev/null | awk NR==${CNT}{'print $6'}`"
+        echo $CLIENT_RSSI | egrep "^[0-9]+$" > /dev/null
+        if [ $? -eq 0 ];then
+            #transfer to a negative value
+            let CLIENT_RSSI=-95+CLIENT_RSSI
+        fi
+        CLIENT_MCS="`wlanconfig ${INT} list sta 2>/dev/null | awk NR==${CNT_MCS}{'print $6'}`"
+	#echo "CLIENT_MCS=$CLIENT_MCS"
+        local STAMAC="$(wlanconfig ${INT} list sta 2>/dev/null | awk NR==${CNT}{'print $1'})"
+        local PUB_TOPIC="network/${TOPIC_UUID}/WLAN/subdev/${STAMAC//:/-}/status"
+        local APBSSID="$(ifconfig ${INT} 2>/dev/null | grep HWaddr | awk '{print $5}')"
+        local MODE="$(wlanconfig ${INT} list sta 2>/dev/null | awk NR==${CNT} | sed 's/IEEE80211_MODE_/&\n/' | awk NR==2'{print $1}')"
+        local CLIENT_PHYRATE="$(wlanconfig ${INT} list sta 2>/dev/null | awk NR==${CNT}{'print $5'})"
+        local STATUS="connected"
+        local BTM_CAP="$(btm_capable ${INT} ${STAMAC})"
+        local RRM_CAP="$(rrm_capable ${INT} ${STAMAC})"
+
+        if required_params_validate; then
+            mk_infra_payload \
+                -t status \
+                -u "$UUID" \
+                -s "ap_bssid:$APBSSID" \
+                -s "band:$BAND" \
+                -s "sta_bssid:$STAMAC" \
+                -s "rssi:$CLIENT_RSSI" \
+                -s "interface:${INT}" \
+                -s "wl_interface:${WL_INT}" \
+                -r "guest:${GUESTCLIENT}" \
+                -s "mode:$MODE" \
+                -s "phyrate:$CLIENT_PHYRATE" \
+                -s "status:$STATUS" \
+                -s "btm_cap:$BTM_CAP" \
+                -s "rrm_cap:$RRM_CAP" \
+                -s "mcs:$CLIENT_MCS" | \
+                publish "$PUB_TOPIC"
+        else
+            ulog $PROGNAME STATUS "Skipping transmission due to missing parameters"
+        fi
+    done
+}
+
+
+PublishAllClients()
+{
+    PHYSICAL_IF_LIST=`syscfg get lan_wl_physical_ifnames`
+    for PHY_IF in $PHYSICAL_IF_LIST; do
+        WL_SYSCFG=`syscfg get ${PHY_IF}_syscfg_index`
+        RADIO_TYPE="2.4GHz"
+        [ "$WL_SYSCFG" != "wl0" ] && RADIO_TYPE="5GHz"
+
+        PublishClientOnInterface ${PHY_IF} ${RADIO_TYPE} "false" $WL_SYSCFG
+
+        if [ "`syscfg get guest_enabled`" = "1" ] && [ "`syscfg get ${WL_SYSCFG}_guest_enabled`" = "1" ] ; then
+            GUEST_INTERFACE="`syscfg get ${WL_SYSCFG}_guest_vap`"
+            PublishClientOnInterface ${GUEST_INTERFACE} ${RADIO_TYPE} "true" $WL_SYSCFG
+        fi
+
+        if [ "`syscfg get ${WL_SYSCFG}_security_mode`" = "wpa3-open" ] ; then
+            OWE_INTERFACE="`syscfg get ${WL_SYSCFG}_owe_vap`"
+            PublishClientOnInterface ${OWE_INTERFACE} ${RADIO_TYPE} "false" $WL_SYSCFG
+        fi
+    done
+}
+
+#---------------------------------------------------------------------
+
+if [ -z $STAMAC ] ;then
+    PublishAllClients
+else
+    PublishSingleCLient
+fi

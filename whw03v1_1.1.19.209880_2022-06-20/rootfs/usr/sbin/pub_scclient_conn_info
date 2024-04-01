@@ -1,0 +1,30 @@
+#!/bin/sh
+#
+# Copyright (c) 2018, Belkin Inc. All rights reserved.
+#
+# Publish some smartconnect client connection data to a MQTT topic
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PUB_TOPIC="$(omsg-conf -m SC_CLIENT_CONN_INFO | sed "s/+/$TOPIC_UUID/")"
+
+SETUP_VAP=$(syscfg get smart_connect::wl0_setup_vap)
+PAYLOAD=""
+
+# Only one SC client should be connected to the setup AP
+STA="`wlanconfig $SETUP_VAP list sta 2>/dev/null | tail +2`"
+if [ -n "$STA" ] && [ $(echo "$STA" | wc -l) -eq 1 ]; then
+    TXRATE=$(echo "$STA" | awk '{print $4}' | sed 's/M$//')
+    RXRATE=$(echo "$STA" | awk '{print $5}' | sed 's/M$//')
+    SIGNAL_STRENGTH=$(echo "$STA" | awk '{print $6}')
+    IDLE_TIME=$(echo "$STA" | awk '{print $9}')
+
+    PAYLOAD=$(jsongen \
+      -s "apDeviceID:${UUID}" \
+      -s "txRate:${TXRATE}" \
+      -s "rxRate:${RXRATE}" \
+      -s "signalStrength:${SIGNAL_STRENGTH}" \
+      -s "idleTime:${IDLE_TIME}")
+fi
+echo "$PAYLOAD" | publish "$PUB_TOPIC"

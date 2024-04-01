@@ -1,0 +1,1 @@
+/www/ui/cgi/usbinfo.cgi

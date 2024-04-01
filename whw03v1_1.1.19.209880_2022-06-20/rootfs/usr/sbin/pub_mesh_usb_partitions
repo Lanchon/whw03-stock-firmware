@@ -1,0 +1,73 @@
+#!/bin/sh
+#
+# Copyright (c) 2019, Belkin Inc. All rights reserved.
+#
+# Publish MESH-USB storage partitions data to a MQTT topic
+
+PROG_NAME="$(basename $0)"
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+MODE=$(syscfg get smart_mode::mode)
+PUB_TOPIC="network/${TOPIC_UUID}/MESHUSB/partitions"
+
+if [ "$(sysevent get backhaul::status)" != "up" ]; then
+    [ $DEBUG ] && echo "$PROG_NAME: Backhaul down, aborting"
+    exit 0
+fi
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   STATE    : $STATE"
+fi
+
+[ $DEBUG ] && echo "${PROG_NAME}: publishing USB storage partitions data."
+STORAGE_DEV=`sysevent get usb_storage_devices`
+PARTITION_ITEMS=""
+PARTITION_COUNT=0
+for dev in ${STORAGE_DEV}
+do
+  USB_PARTITIONS=`sysevent get usb_${dev}_partitions`
+  for p in $USB_PARTITIONS
+  do
+    PARTITION_COUNT="`expr ${PARTITION_COUNT} + 1`"
+    INFO="/tmp/.usbinfo/${p}.nfo"
+	PARTITIONNAME="`cat $INFO | awk '{array[NR]=$0} END {print array[1]}' | cut -d ':' -f 2`"
+	DEVICENAME="`cat $INFO | awk '{array[NR]=$0} END {print array[2]}' | cut -d ':' -f 2`"
+	STORAGETYPE="`cat $INFO | awk '{array[NR]=$0} END {print array[3]}' | cut -d ':' -f 2`"
+	PORTID="`cat $INFO | awk '{array[NR]=$0} END {print array[4]}' | cut -d ':' -f 2`"
+	LABEL="`cat $INFO | awk '{array[NR]=$0} END {print array[5]}' | cut -d ':' -f 2`"
+	LABEL=`echo $LABEL | sed 's/\\"/\\\"/g'`
+	FILESYSTEM="`cat $INFO | awk '{array[NR]=$0} END {print array[6]}' | cut -d ':' -f 2`"
+	TABLEFORMAT="`cat $INFO | awk '{array[NR]=$0} END {print array[7]}' | cut -d ':' -f 2`"
+	MANUFACTURER="`cat $INFO | awk '{array[NR]=$0} END {print array[9]}' | cut -d ':' -f 2`"
+	PRODUCT="`cat $INFO | awk '{array[NR]=$0} END {print array[10]}' | cut -d ':' -f 2`"
+
+
+    INFO="`df /dev/${p} | grep ${p}`"
+    USEDKB="`echo $INFO | awk '{print $3}'`"
+    AVAILABLEKB="`echo $INFO | awk '{print $4}'`"
+
+    [ -n "$PARTITION_ITEMS" ] && PARTITION_ITEMS="$PARTITION_ITEMS, "
+    PARTITION_ITEMS="$PARTITION_ITEMS$(jsongen \
+        -s "name:${PARTITIONNAME}" \
+        -s "deviceName:${DEVICENAME}" \
+        -s "label:${LABEL}" \
+        -s "fileSystem:${FILESYSTEM}" \
+        -s "used:${USEDKB}" \
+        -s "available:${AVAILABLEKB}" \
+        -s "type:${STORAGETYPE}" \
+        -s "portId:${PORTID}" \
+        -s "tableFormat:${TABLEFORMAT}" \
+        -s "manufacturer:${MANUFACTURER}" \
+        -s "product:${PRODUCT}")"
+  done
+done
+mk_infra_payload \
+    -t status \
+    -r "partitions:$(jsongen -o a -a "$PARTITION_ITEMS")" | \
+    publish "$PUB_TOPIC"

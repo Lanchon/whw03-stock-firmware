@@ -1,0 +1,13 @@
+#!/bin/sh
+
+#------------------------------------------------------------------
+# © 2013 Belkin International, Inc. and/or its affiliates. All rights reserved.
+#------------------------------------------------------------------
+
+
+#------------------------------------------------------------------
+# This script is run by the init process during the once target
+# It signals sysevent to start the system
+#------------------------------------------------------------------
+
+sysevent set system-start

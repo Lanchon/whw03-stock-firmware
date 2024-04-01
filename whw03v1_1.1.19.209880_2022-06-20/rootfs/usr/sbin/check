@@ -1,0 +1,18 @@
+#!/bin/sh
+
+Debug()
+{
+#	return
+	echo "[fw.sh] $@" >> /dev/console
+} 
+
+Debug "check $@"
+
+if [ ! -e "$1" ]; then
+	exit 1
+fi
+
+FirmwareImage="$1"
+
+source /usr/sbin/fwcc check_signature $FirmwareImage
+

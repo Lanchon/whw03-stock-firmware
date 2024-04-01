@@ -1,0 +1,2 @@
+# Remove all access restrictions on the default port
+topic readwrite #

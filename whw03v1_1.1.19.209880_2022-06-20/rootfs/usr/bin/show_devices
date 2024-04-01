@@ -1,0 +1,96 @@
+#!/usr/bin/lua
+--  -*- lua -*-
+--  A simple utility to display basic information about every device in DeviceDB
+--
+
+nutil = require 'nodes.util'
+ddb = require('libdevdblua').db()
+
+local NAME_MAX = 16
+local DITTO_MAC  = '"    "    "     "'
+local DITTO_UUID = '"    "    "    "    "    "    "    "'
+
+function show_line( line )
+   for _,k in ipairs{ 'mac', 'name', 'ver', 'role', 'conn' } do
+      line[k] = line[k] or ""
+   end
+   if line.conn == 'wireless' then line.conn = "Wi-Fi" end
+   line.id = line.id or DITTO_UUID
+   local up = ( line.up and tonumber( line.up ) == 1 ) and "Up" or "Down"
+   local name = line.name
+   if #name > NAME_MAX then
+      name = string.sub( name, 1, NAME_MAX - 2 ) .. ".."
+   end
+
+   local ipaddr = line.ipaddr and line.ipaddr[1].ip or ""
+   --            UUID  MAC   IP     Con   Stat  Name   Ver    Role
+   local LINE = "%36s  %17s  %-16s  %-5s  %-4s  %-16s  %-16s  %-7s"
+   print( LINE:format(
+          line.id, line.mac, ipaddr, line.conn, up, name, line.ver, line.role
+   ))
+   if line.ipaddr and #line.ipaddr > 1 then
+      for i, intf in ipairs( line.ipaddr ) do
+         if i > 1 then
+            print( LINE:format( DITTO_UUID, DITTO_MAC, intf.ip, "", "", "", "", "" ))
+         end
+      end
+   end
+end
+
+function show_device( dev )
+   local name = dev.friendlyName or dev.hostname or ""
+   local intf
+   if dev.property then
+      name = dev.property.userDeviceName or
+         dev.property.userDeviceLocation or
+         name
+   end
+
+   local mac, up, conn =  "None", false, ""
+   if dev.interface and #dev.interface > 0 then
+      intf = dev.interface[1]
+      mac, up, conn, ipaddr = intf.macAddr, intf.connectionOnline, intf.interfaceType, intf.ipaddr
+   end
+   local role = dev.infrastructure and dev.infrastructure.infrastructureType or "client"
+   show_line{ id     = dev.deviceId,
+              ipaddr = ipaddr,
+              mac    = mac,
+              up     = up,
+              name   = name,
+              ver    = dev.firmwareVersion,
+              role   = role,
+              conn   = conn }
+   if dev.interface and #dev.interface > 1 then
+      for _,intf in ipairs( dev.interface ) do
+         if _ > 1 then
+            show_line{
+               mac    = intf.macAddr,
+               up     = intf.connectionOnline,
+               conn   = intf.interfaceType,
+               ipaddr = intf.ipaddr }
+         end
+      end
+   end
+   -- Display additional interfaces on lines with other items blanked
+end
+
+function show_devices()
+   if ddb:readLock() then
+      devs = ddb:getAllDevices()
+      ddb:readUnlock()
+      if devs then
+         --local i, dev
+         print( "               UUID                         MAC(s)              IP         Conn.  Stat        Name             FW Ver        Role " )
+         print( "------------------------------------  -----------------  ----------------  -----  ----  ----------------  ----------------  ------" )
+         for _,dev in ipairs( devs ) do
+            show_device( dev )
+         end
+      else
+         print( "No devices at all" )
+      end
+   else
+      print( "Error acquiring read lock" )
+   end
+end
+
+show_devices()

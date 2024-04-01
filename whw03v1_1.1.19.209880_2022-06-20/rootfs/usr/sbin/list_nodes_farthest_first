@@ -1,0 +1,129 @@
+#!/usr/bin/env lua
+
+package.path = "./?/init.lua;/home/dash/lib/lua/5.1/?.lua;/home/dash/lib/lua/5.1/?/init.lua;"..package.path
+
+DEV = require'nodes.tess.device'
+NU  = require'nodes.util'
+NODE = require'nodes.tess.node'
+
+cli   = require "cliargs"
+nutil = require 'nodes.util'
+local errout = nutil.errout
+local debout = nutil.debout
+local verbout = nutil.verbout
+
+
+local DEFAULT_MSG_PATH = "/tmp/msg"
+local DEFAULT_PILETO   = "5GL"
+local DEFAULT_INCL_MASTER = false
+
+-- Keep prog_name global for use in error messages
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+-- Keep opts global for access by external modules
+opts  = { prog_name = prog_name }
+
+function valid_band( value )
+   return ({ ["5GL"] = true, ["5GH"] = true })[ value ]
+end
+
+function parse_args()
+   -- Set up command line options
+   cli:set_name( prog_name                                              )
+   cli:set_description( 'List Node UUIDs, farthest first'               )
+   cli:option( "-m,--master-too","Include Master in list",        false )
+   cli:option( "-M,--msg=DIR",   "Specify msg dir",    DEFAULT_MSG_PATH )
+   cli:flag(   "-d,--debug",     "Show debugging output",         false )
+   cli:flag(   "-v,--verbose",   "Be verbose",                    false )
+   cli:flag(   "-h,--help",      "This help"                            )
+
+   local args, err = cli:parse()
+
+   if not args and err then
+      errout( err )
+      os.exit( 0 )
+   else
+      local opts = {
+         debug      = not not args.debug,
+         master_too = not not args["master-too"],
+         path       = args.msg,
+         verbose    = not not args.verbose,
+      }
+      -- If debug is set, output the options
+      if opts.debug then
+         errout( "%s options: ", cli.name )
+         for k,v in pairs( opts ) do
+            errout( "%12s: (%s)", k, tostring( v ))
+         end
+      end
+      return opts
+   end
+end
+
+
+NET = require'nodes.tess.network'
+NU  = require'nodes.util'
+local debout = NU.debout
+local verbout = NU.verbout
+
+function nodes_tip_first( node, list )
+   local Node = require 'nodes.tess.node'
+   local list = list or {}
+   debout( "nodes_tip_first: %s", tostring( node ))
+   if node then
+      for i,kid in ipairs( node.kids ) do
+         nodes_tip_first( kid, list )
+      end
+      debout( "Node mode: %s ('%s'?)", node.mode, Node.MODE_NAME.MASTER )
+      debout( "opts.master_too: %s", opts.master_too and "true" or "false")
+      if node.mode ~= Node.MODE_NAME.MASTER or opts.master_too then
+         debout( "Inserting node" )
+         table.insert( list, node )
+      else
+         debout( "Skipping master Node" )
+      end
+   end
+   return list
+end
+
+
+function info( node )
+   local FMT="id: '%s', mode: %6s, kids: %d"
+   print( FMT:format( node.uuid, node.mode, #node.kids ))
+end
+
+function _main()
+   local status = 1
+   opts = parse_args()
+   DEV.__diddle_DEFAULT_BASE_MSG_DIR( opts.path )
+
+   net = NET.snapshot()
+   if net then
+      local tree = net:get_node_tree()
+      if tree then
+         local list = nodes_tip_first( tree )
+         if list then
+            verbout( "Nodes found: %d", #list )
+            if opts.verbose then
+               verbout( "List of Nodes (%sincluding Master):",
+                        opts.master_too and "" or "not " )
+            end
+            for _,node in ipairs( list ) do
+               if opts.verbose then
+                  info( node )
+               else
+                  print( node.uuid )
+               end
+            end
+            status = 0
+         end
+      else
+         error "Couldn't generate Node tree"
+      end
+   else
+      error "Couldn't take snapshot of network"
+   end
+   return status
+end
+
+os.exit( _main())

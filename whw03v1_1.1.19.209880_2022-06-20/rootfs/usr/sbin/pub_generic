@@ -1,0 +1,31 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish stdin to a specified topic
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PROGNAME=$(basename $0)
+
+usage() {
+    printf "Usage:\n"
+    printf "        %s {TOPIC}\n" $PROGNAME
+    echo "Published stdin to {TOPIC}"
+}
+
+PUB_TOPIC="$1"
+validate PUB_TOPIC
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   DAEMON   : $DAEMON_MODE"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   TOPIC    : $PUB_TOPIC"
+fi
+
+publish "$PUB_TOPIC"

@@ -1,0 +1,1 @@
+/tmp/security_log.txt

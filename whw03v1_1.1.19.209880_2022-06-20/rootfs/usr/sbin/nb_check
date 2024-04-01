@@ -1,0 +1,67 @@
+#!/bin/sh
+#------------------------------------------------------------------
+# © 2017 Belkin International, Inc. and/or its affiliates. All rights reserved.
+#------------------------------------------------------------------
+# This script is for neighbors check.
+# result map
+# 0    not connected
+# 1    non-node neighbor
+# 2    nodes without root access
+# 3    nodes with root access
+
+# nb_check return values.
+NOT_CONNECTED=0
+NON_NODE_NEIGHBOR=1
+NODE_WITHOUT_RA=2
+NODE_WITH_RA=3
+#MASTER_WITH_RA=4
+
+ifname=$1
+#Check if it is connected.
+if [ "${ifname}" = "eth0" ] ; then
+	if [ "$(sysevent get ETH::port_5_status)" != "up" ] ; then
+		echo $NOT_CONNECTED
+		return $NOT_CONNECTED
+	fi
+elif [ "${ifname}" = "eth1" ] ; then
+	if [ "$(sysevent get ETH::port_4_status)" != "up" ] ; then
+		echo $NOT_CONNECTED
+		return $NOT_CONNECTED
+	fi
+fi
+
+ifname_dir="/tmp/nb/$ifname"
+file_name=$(ls -A ${ifname_dir} 2>/dev/null)
+
+if [ -d "${ifname_dir}" ] && [ "${file_name}" != "" ] ; then
+	file_path="${ifname_dir}/${file_name}"
+	peer_mode=$(cat $file_path |grep "mode" |awk -F "=" '{print $2}')
+	root_accessible=$(cat $file_path |grep "ra" |awk -F "=" '{print $2}')
+	#product=$(cat $file_path |grep chassis.descr |awk -F "=" '{print $2}')
+	
+	if [ "${root_accessible}" = "01" ] ; then
+		#if [ "${peer_mode}" = "02" ]; then
+			#master with RA
+			echo ${NODE_WITH_RA}
+			return ${NODE_WITH_RA}
+		#else
+			#slave with RA
+		#	echo ${SLAVE_WITH_RA}
+		#	return ${SLAVE_WITH_RA}
+		#fi
+	else
+		if [ "${peer_mode}" != "" ] ; then
+			#nodes without RA
+			echo ${NODE_WITHOUT_RA}
+			return ${NODE_WITHOUT_RA}
+		else
+			#non-node neighbors
+			echo ${NON_NODE_NEIGHBOR}
+			return ${NON_NODE_NEIGHBOR}		
+		fi
+	fi
+else
+	#non-node neighbors
+	echo ${NON_NODE_NEIGHBOR}
+	return ${NON_NODE_NEIGHBOR}
+fi

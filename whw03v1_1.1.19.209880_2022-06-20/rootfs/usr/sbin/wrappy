@@ -1,0 +1,57 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+
+local cli       = require "cliargs"
+local opts      = {}
+local util      = require 'util'
+local prog_name = string.match( arg[0], ".*/(.*)" )
+
+function parse_args()
+   -- Set up command line options
+   cli:set_name( prog_name )
+   cli:set_description( 'Wrap or unwrap text' )
+   cli:argument( "INPUT", "text to process"          )
+   cli:flag( "-d,--debug",    "Show debugging output", false   )
+   cli:flag( "-u,--unwrap",   "Unwrap",                false   )
+   cli:flag( "-v,--verbose",  "Be verbose",            false   )
+   cli:flag( "-h,--help",     "This help"                      )
+
+   local args, err = cli:parse()
+
+   if not args and err then
+      print( err )
+      os.exit(1)
+   else
+      local opts = {
+         debug = not not args.debug,
+         verbose = not not args.verbose,
+         unwrap  = not not args.unwrap,
+         text = args.INPUT
+      }
+      -- If debug is set, dump out the options now
+      if opts.debug then
+         print( cli.name .. " options:" )
+         for k,v in pairs( opts ) do
+            print( string.format( "%12s: (%s)", k, tostring( v )))
+         end
+      end
+      return opts
+   end
+end
+
+function _main()
+   opts = parse_args()
+
+   local func   = opts.unwrap and util.unwrap or util.wrap
+   local result = func( opts.text )
+
+   if opts.verbose then
+      result = string.format( "Input:  '%s'\noutput: '%s'", opts.text, result )
+   end
+   print( result )
+end
+
+local ok, err = pcall( _main )
+if not ok then
+   print( prog_name .. " error: " .. tostring( err ))
+end

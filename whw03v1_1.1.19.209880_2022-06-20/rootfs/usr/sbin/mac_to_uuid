@@ -1,0 +1,23 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+-- Copyright (c) 2018 Linksys and/or its affiliates. All rights reserved.
+
+NET = require'nodes.tess.network'
+Mac = require('nodes.util.mac').Mac
+
+if #arg < 1 then
+   io.stderr:write( "Missing MAC parameter\n" )
+   os.exit( 1 )
+end
+
+mac = Mac:new( arg[1] )
+net = NET.snapshot()
+node = net:find_node_by_mac( mac )
+
+if node == nil then
+   io.stderr:write(
+      ("Couldn't find Node for mac '%s'"):format( tostring(mac)))
+   os.exit( 1 )
+end
+
+print( node.uuid )

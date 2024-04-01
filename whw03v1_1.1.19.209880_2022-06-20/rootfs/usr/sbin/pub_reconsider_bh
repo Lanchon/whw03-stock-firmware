@@ -1,0 +1,43 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish nodes steering command to an MQTT topic
+#
+
+# Set common values
+source /etc/init.d/sub_pub_funcs.sh
+source /etc/init.d/tesseract_common.sh
+
+PROG_NAME="$(basename $0)"
+
+TARGET_UUID="$1"
+PUB_TOPIC="$(omsg-conf -s RECONSIDER-BACKHAUL | sed "s/%uuid/${TARGET_UUID}/")"
+validate PUB_TOPIC
+
+CONTEXT_ID="$(sysevent get $TESS_CONTEXT_ID_EVNAME)"
+CONTEXT_ID=${CONTEXT_ID:-0}
+NEXT_CONTEXT_ID=$(expr $CONTEXT_ID + 1)
+sysevent set $TESS_CONTEXT_ID_EVNAME $NEXT_CONTEXT_ID
+validate CONTEXT_ID
+
+if [ "$DEBUG" = "1" ];then
+    debout "Options:"
+    debout "   BIND_ADDR:      $BIND_ADDR"
+    debout "   HOST_PORT:      $HOST_PORT"
+    debout "   HOST_ADDR:      $HOST_ADDR"
+    debout "   TOPIC:          $PUB_TOPIC"
+    debout "   STATUS:         $STATUS"
+    debout "   TARGET_UUID:    $TARGET_UUID"
+    debout "   CONTEXT_ID:     $CONTEXT_ID"
+fi
+
+if [ -z "$TARGET_UUID" ];then
+    errout "$PROG_NAME Error: Need Node UUID"
+    errout "Usage: $PROG_NAME [Slave UUID]"
+    exit 1
+fi
+
+mk_infra_payload -t cmd \
+                 -s "$TESS_JSON_CONTEXT_ID:$CONTEXT_ID" \
+    | publish $PUB_TOPIC

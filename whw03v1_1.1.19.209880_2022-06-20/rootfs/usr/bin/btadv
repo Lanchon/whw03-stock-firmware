@@ -1,0 +1,225 @@
+#!/bin/sh
+
+###########################
+##  Advertising Parameter
+###########################
+ADV_INTERVAL_MIN="00 08"
+ADV_INTERVAL_MAX="00 08"
+ADV_TYPE="00"
+OWN_ADDR_TYPE="00"
+PEER_ADDR_TYPE="00"
+PEER_ADDR="00 00 00 00 00 00"
+ADV_CH_MAP="07"
+ADV_FILTER_POLICY="00"
+ADV_PARA_DATA="$ADV_INTERVAL_MIN \
+          $ADV_INTERVAL_MAX \
+          $ADV_TYPE \
+          $OWN_ADDR_TYPE \
+          $PEER_ADDR_TYPE \
+          $PEER_ADDR \
+          $ADV_CH_MAP \
+          $ADV_FILTER_POLICY"
+        
+cmd_adv_para_set()
+{
+    CMD_ADV_PARA_SET="hcitool -i hci0 cmd 0x08 0x0006 $ADV_PARA_DATA"
+    $CMD_ADV_PARA_SET
+}
+
+###########################
+##  Enable Advertising
+###########################
+ADV_DISABLE="00"
+ADV_ENABLE="01"
+cmd_adv_enable()
+{
+    if [ "$1" = "enable" ] ; then
+        ADV_ENABLE_VAL="$ADV_ENABLE"
+        cmd_adv_para_set
+    elif [ "$1" = "disable" ] ; then
+        ADV_ENABLE_VAL="$ADV_DISABLE"
+    else
+        echo "Invalid Enable Status ($1)"
+        return 1
+    fi
+    CMD_ADV_ENABLE="hcitool -i hci0 cmd 0x08 0x000a $ADV_ENABLE_VAL"
+    $CMD_ADV_ENABLE
+    return 0
+}
+
+#############################
+##  ADV_IND & SCAN_RES data
+#############################
+# Type
+ADV_TYPE_FLAGS="01"
+ADV_TYPE_NAME="09"
+ADV_TYPE_MFG="ff"
+ADV_TYPE_UUID="07"
+ADV_LEN="1f"
+
+# Flags
+ADV_FLAGS_LEN="02"
+ADV_FLAGS_VAL="06"
+ADV_FLAGS="$ADV_FLAGS_LEN $ADV_TYPE_FLAGS $ADV_FLAGS_VAL"
+
+# Name
+ADV_NAME_LEN="08"
+ADV_NAME_VAL="4c 69 6e 6b 73 79 73"
+ADV_NAME="$ADV_NAME_LEN $ADV_TYPE_NAME $ADV_NAME_VAL"
+ADV_DUMMY="00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+ADV_DATA="$ADV_FLAGS $ADV_NAME"
+
+# Service UUID
+ADV_UUID_LEN="11"
+ADV_UUID_VAL="d1 6f 01 40 94 0e 88 b7 c2 46 ab 8e 80 20 00 00"
+ADV_UUID="$ADV_UUID_LEN $ADV_TYPE_UUID $ADV_UUID_VAL"
+SCAN_RES_DUMMY="00 00 00 00 00 00 00"
+
+# Manufacturer data
+ADV_MFG_LEN="05"
+ADV_MFG_BELKIN="5c 00"
+ADV_MFG=0
+# Bit offset
+ADV_MFG_BH_BIT=8
+ADV_MFG_ML_BIT=2
+ADV_MFG_SM_BIT=0
+# Smart mode
+ADV_MFG_SM_UNCONFIGURED=0
+ADV_MFG_SM_SLAVE=1
+ADV_MFG_SM_MASTER=2
+ADV_MFG_SM_VAL=0
+# Backhaul mode
+ADV_MFG_BH_UP=1
+ADV_MFG_BH_DOWN=0
+ADV_MFG_BH_VAL=0
+# Mode limitation
+ADV_MFG_ML_NOLIMIT=0
+ADV_MFG_ML_SLAVE=1
+ADV_MFG_ML_MASTER=2
+ADV_MFG_ML_VAL=0
+
+
+cmd_adv_set()
+{
+    MFG_STATUS=0
+
+    # Smart mode
+    if [ "$1" = "master" ] ; then
+        ADV_MFG_SM_VAL="$ADV_MFG_SM_MASTER"
+    elif [ "$1" = "slave" ] ; then
+        ADV_MFG_SM_VAL="$ADV_MFG_SM_SLAVE"
+    elif [ "$1" = "unconfigured" ] ; then
+        ADV_MFG_SM_VAL="$ADV_MFG_SM_UNCONFIGURED"
+    else
+        echo "Invalid Smart Mode ($1)"
+        return 1
+    fi
+    MFG_STATUS=$((MFG_STATUS | ADV_MFG_SM_VAL<<ADV_MFG_SM_BIT))
+
+    # Backhaul stauts
+    if [ "$2" = "up" ] ; then
+        ADV_MFG_BH_VAL="$ADV_MFG_BH_UP"
+    elif [ "$2" = "down" ] ; then
+        ADV_MFG_BH_VAL="$ADV_MFG_BH_DOWN"
+    else
+        echo "Invalid Backhaul Status ($2)"
+        return 1
+    fi
+    MFG_STATUS=$((MFG_STATUS | ADV_MFG_BH_VAL<<ADV_MFG_BH_BIT))
+
+    # Mode limitation
+    if [ "$3" = "master" ] ; then
+        ADV_MFG_ML_VAL="$ADV_MFG_ML_MASTER"
+    elif [ "$3" = "slave" ] ; then
+        ADV_MFG_ML_VAL="$ADV_MFG_ML_SLAVE"
+    elif [ "$3" = "nolimit" ] ; then
+        ADV_MFG_ML_VAL="$ADV_MFG_ML_NOLIMIT"
+    else
+        echo "Invalid Smart Mode Limitation($3)"
+        return 1
+    fi
+    MFG_STATUS=$((MFG_STATUS | ADV_MFG_ML_VAL<<ADV_MFG_ML_BIT))
+
+    MFG_STATUS=`printf "%02x %02x" $((MFG_STATUS>>8)) $((MFG_STATUS & 0xFF))`
+    ADV_MFG_VAL="$ADV_MFG_BELKIN $MFG_STATUS"
+    ADV_MFG="$ADV_MFG_LEN $ADV_TYPE_MFG $ADV_MFG_VAL"
+    SCAN_RES_DATA="$ADV_MFG $ADV_UUID"
+
+    CMD_SET_ADV="hcitool -i hci0 ad $ADV_DATA"
+    CMD_SET_SCAN_RES="hcitool -i hci0 sd $SCAN_RES_DATA"
+
+    $CMD_SET_ADV
+    $CMD_SET_SCAN_RES
+    return 0
+}
+
+
+##############
+##  Command
+##############
+OP_ADV_SET=""
+OP_ADV_EN=""
+
+usage() {
+    printf "Usage:\n"
+    printf "\tbtadv -m master -b down\n"
+    printf "\tbtadv -a enable\n"
+    printf "Options:\n"
+    printf "\t-m <smart mode status>\t: Set smart mode status\n"
+    printf "\t\tmaster\n"
+    printf "\t\tslave\n"
+    printf "\t\tunconfigured\n"
+    printf "\t-b <backhaul status>\t: Set backhaul status\n"
+    printf "\t\tup\n"
+    printf "\t\tdown\n"
+    printf "\t-l <smart mode limitation>\t: Set smart mode limitation\n"
+    printf "\t\tmaster\n"
+    printf "\t\tslave\n"
+    printf "\t\tnolimit\n"
+    printf "\t-a <enable>\t: Enable advertising\n"
+    printf "\t\tenable\n"
+    printf "\t\tdisable\n"
+}
+
+while getopts ":a:b:m:l:h" opt; do
+    case $opt in
+        b) BH=$OPTARG ; OP_ADV_SET=1 ;;
+
+        m) SM=$OPTARG ; OP_ADV_SET=1 ;;
+
+        l) ML=$OPTARG ; OP_ADV_SET=1 ;;
+
+        a) EN=$OPTARG ; OP_ADV_EN=1 ;;
+
+        h) usage ; exit 0 ;;
+
+        :) echo "No argument for -$OPTARG" >&2
+        exit 1
+        ;;
+
+        \?) echo "Invalid Option -$OPTARG" >&2
+        exit 1
+        ;;
+    esac
+done
+shift $((OPTIND-1))
+#echo Arguments: $*
+
+if [ "$#" != "0" ] ; then
+    usage
+    exit 1
+fi
+
+if [ "$OP_ADV_SET" = "1" ] && [ "$OP_ADV_EN" = "1" ] ; then
+    usage
+    exit 1
+fi
+
+if [ "$OP_ADV_SET" = "1" ] ; then
+    cmd_adv_set $SM $BH $ML
+elif [ "$OP_ADV_EN" = "1" ] ; then
+    cmd_adv_enable $EN
+else
+    usage
+    exit 1
+fi

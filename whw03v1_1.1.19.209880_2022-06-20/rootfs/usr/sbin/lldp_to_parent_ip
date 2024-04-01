@@ -1,0 +1,161 @@
+#!/bin/sh
+
+PROGNAME="$(basename $0)"
+NB_BASE_DIR="/tmp/nb"
+
+source /etc/init.d/ulog_functions.sh
+
+errout () {
+    echo "$*" 1>&2
+}
+
+debout () {
+    [ "$DEBUG" ] && errout "$*"
+}
+
+die () {
+    errout "$*"
+    exit 1
+}
+
+usage() {
+    cat <<EOF
+$PROGNAME Determines parent IP based on a network interface name.
+The IFACE is something like "eth0".
+Usage:
+        $PROGNAME {options} {IFACE}
+Where {options} are one or more of:
+  -n          Dry run; don't send notification, just show command
+  -h          This help
+Note: If both -b & -r are specified the last one wins.
+EOF
+}
+
+while getopts ":dnh" opt;do
+    case $opt in
+        d)  DEBUG=1 ;;
+        n)  FAKE="echo" ;;
+        h) usage ; exit 0 ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+if [ "$#" -lt 1 ]; then
+    usage
+    exit 1
+fi
+INTF="$1"
+
+# $1: File to parse
+# $2: key to extract value of
+lldp_get_value () {
+    [ -z "$1" ] && die "lldp_get_value: fatal error, missing file"
+    [ -z "$2" ] && die "lldp_get_value: fatal error, missing key"
+    local RESULT="$(grep "^$2 *= *" "$1" | cut -f2 -d=)"
+    debout "lldp_get_value( $1, $2 ): $RESULT"
+    echo $RESULT
+}
+
+# $1: File to check
+root_accessible () {
+    local RESULT=1
+    local FILE="$1"
+    local RA="$(lldp_get_value "$FILE" "ra")"
+    if [ "$RA" -eq 1 ]; then
+        RESULT=0
+        ulog ${PROGNAME} STATUS "Root accessible node found in $FILE"
+    fi
+    return $RESULT
+}
+
+# $1: File to get IP from
+get_ip () {
+    lldp_get_value $1 "chassis.mgmt-ip"
+}
+
+# $1: LLDP message file
+is_root () {
+    local FILE="$1"
+    local RESULT=0
+    local MODE="$(lldp_get_value $FILE "mode")"
+    if [ -z "$MODE" ] || [ "$MODE" -ne 2 ]; then
+        RESULT=1
+    else
+        ulog ${PROGNAME} STATUS "Root node found in $FILE, mode: $MODE"
+    fi
+
+    return $RESULT
+}
+
+debout "Looking for parent IP through interface '$INTF'"
+
+# $1: Function to check
+# $2: Action when check is positive
+# $3-n: list of LLDP files
+check_using () {
+    CHECK="$1"
+    ACTION="$2"
+    shift 2
+    for i in $*;do
+        if $CHECK $i; then
+            $ACTION $i
+            return 0
+        fi
+    done
+    return 1
+}
+
+# $1: Parent LLDP file
+process_parent_IP () {
+    local FILE="$1"
+    local PARENT_IP
+    if is_root $i; then
+        debout "Node is Root"
+        # For root, we use the rip (Root IP), which is a hex octet list
+        local RAW_RIP="$(lldp_get_value $FILE rip)"
+        debout "RAW_RIP: $RAW_RIP"
+        PARENT_IP="$(printf "%d.%d.%d.%d\n" 0x$(echo $RAW_RIP | sed 's/,/ 0x/g'))"
+        debout "PARENT_IP: $PARENT_IP"
+    else
+        debout "Node is NOT Root"
+        PARENT_IP="$(get_ip $i)"
+    fi
+    ulog ${PROGNAME} STATUS "Invoking pub_slave_parent_ip -d $PARENT_IP"
+    debout "Invoking pub_slave_parent_ip -d $PARENT_IP"
+    $FAKE pub_slave_parent_ip -d -p $PARENT_IP
+}
+
+if [ -d "${NB_BASE_DIR}/${INTF}" ]; then
+    LLDP_FILES=$(ls -rt ${NB_BASE_DIR}/${INTF}/*)
+elif [ ${INTF} == "ethX" ]; then
+    LLDP_FILES=$(ls -rt ${NB_BASE_DIR}/*/*.txt)
+fi
+
+if [ -n "$LLDP_FILES" ]; then
+    debout "LLDP_FILES: $LLDP_FILES"
+    if check_using is_root process_parent_IP $LLDP_FILES; then
+        ulog ${PROGNAME} STATUS "Found root node"
+    elif check_using root_accessible process_parent_IP $LLDP_FILES; then
+        echo "Root accessible found"
+    else
+        echo "No parent found"
+        PARENT_IP="$(sysevent get master::ip)"
+        [ -n "$PARENT_IP" ] && $FAKE pub_slave_parent_ip -d -p $PARENT_IP
+    fi
+else
+    errout "Error: Could not find LLDP data for interface '${INTF}'"
+    exit 1
+fi
+
+echo "Done"
+exit 0

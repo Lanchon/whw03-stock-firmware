@@ -1,0 +1,105 @@
+#!/usr/bin/lua
+--- topomgmt program that gives access to topology_management module's functions such as node steering, black listing, and data collection.
+--  @copyright Copyright (c) 2020, Belkin Inc. All rights reserved.
+
+local cliargsM     = require( "cliargs" )
+local utilM        = require( "nodes.topology.util" )
+local jsonM        = require("libhdkjsonlua")
+local devinfoM     = require( "nodes.topology.devinfo" )
+local bhM          = require( "nodes.topology.bh" )
+local wlanM        = require( "nodes.topology.wlan" )
+local ethM         = require( "nodes.topology.eth" )
+local viewerM      = require( "nodes.topology.viewer" )
+local steererM     = require( "nodes.topology.steerer" )
+local publisherM   = require( "nodes.topology.publisher" )
+local devicedbM   = require( "nodes.topology.devicedb" )
+local program_name = "topomgr"
+
+local function parse_args()
+    cliargsM:set_name( program_name )
+    cliargsM:set_description( "Perform Topology Management" )
+    
+    cliargsM:option( "-m,--mod=module", "Specify which module to use", nil )
+    cliargsM:option( "-c,--cmd=command", "Specify command to execute", nil )
+    cliargsM:option( "-p,--params=parameters", "Specify command parameters", nil )
+    
+    cliargsM:flag( "-d,--debug",   "Show debugging output", false )
+    cliargsM:flag( "-v,--verbose", "Be verbose",            false )
+    cliargsM:flag( "-h,--help",    "This help" )
+    
+    local args,error_code = cliargsM:parse()
+    if not args and error_code then
+        error( error_code )
+    else
+        local opts = {}
+        
+        if not args.cmd or not args.mod then
+            error( "Error! Module: "..args.mod..", Command: "..args.cmd.." must be set!" )
+        else
+            if args.mod then opts["mod"] = args.mod end
+            if args.cmd then opts["cmd"] = args.cmd end
+            if args.params then opts["params"] = args.params end
+            if args.debug then opts["debug"] = args.debug end
+            if args.verbose then opts["verbose"] = args.verbose end
+            
+            return opts
+        end
+    end
+end
+
+local function _main()
+    local options = parse_args()
+    
+    if options then
+        if options.debug then DEBUG = true end -- set global debug
+        
+        local module = nil
+        if options.mod == "devinfo" then
+            module = devinfoM
+        elseif options.mod == "bh" then
+            moudle = bhM
+        elseif options.mod == "wlan" then
+            module = wlanM
+        elseif options.mod == "eth" then
+            module = ethM
+        elseif options.mod == "viewer" then
+            module = viewerM
+        elseif options.mod == "publisher" then
+            module = publisherM
+        elseif options.mod == "steerer" then
+            module = steererM
+        elseif options.mod == "devicedb" then
+            module = devicedbM
+        else
+            error( "No module named: "..options.mod )
+        end
+        
+        if module[options.cmd] then
+            -- The publisher and steerer module require json format string for options.params.
+            -- All other modules will require their options.params string to be delimited by spaces.
+            local command_params,data_table,error_code = nil
+            if options.mod == "publisher" or options.mod == "steerer" then
+                command_params = options.params
+                data_table,error_code = module[options.cmd]( command_params )
+            else
+                command_params = utilM.tokenize_by_space( options.params )
+                data_table,error_code = module[options.cmd]( unpack(command_params) )
+            end
+            
+            if data_table then
+                print( jsonM.stringify(data_table) ) -- Output command return
+            else
+                error( "Command returned no data!" )
+            end
+        else
+            error( "Module "..options.mod.." does not contain command: "..options.cmd )
+        end
+    end
+end
+
+local ok,error_code = pcall( _main )
+
+if not ok then
+    io.stderr:write( string.format("Error: %s\n", tostring(error_code)) )
+    os.exit( 1 )
+end

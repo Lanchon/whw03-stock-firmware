@@ -1,0 +1,1 @@
+/www/ui/cgi/sysinfo.cgi

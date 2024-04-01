@@ -1,0 +1,1 @@
+/www/ui/cgi/bootloader_info.cgi

@@ -1,0 +1,78 @@
+#!/usr/bin/lua
+
+nutil = require 'nodes.util'
+json  = require 'libhdkjsonlua'
+WM    = require 'nodes.wifi_math'
+Node  = require 'nodes.tess.node'
+Network = require'nodes.tess.network'
+
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+if arg[1] == '-h' then
+   io.stderr:write( prog_name..[[ [-p]
+Copy stdin --> stdout, converting neighbor report to client survey
+-p      Format output for readability
+]])
+   os.exit( 0 )
+elseif arg[1] == '-p' then
+   out = io.popen( "jpp", "w" )
+else
+   out = io.stdout
+end
+
+function get_sta_bssid_for( uuid )
+   local sta_bssid = nil
+   local net = Network.snapshot()
+   -- Find entry for this UUID
+   local bh_entry = net:find_bh_for_uuid( uuid )
+   if bh_entry and bh_entry.data then
+      sta_bssid = bh_entry.data.sta_bssid
+   end
+   return sta_bssid
+end
+
+local QCA_RSSI_OFFSET = -95
+
+function nb_to_client_survey( fh )
+   local cs = {}
+   local raw_nb = fh:read "*all"
+   local all_nodes = Node.load_all()
+
+   local nb, err = json.parse( raw_nb )
+   function rssi_to_rcpi( rssi )
+      rssi = tonumber( rssi )
+      -- If the RSSI value is positive then we treat this as a
+      -- QCA-specific value.  To convert to standard dbM RSSI we
+      -- subtract 95.
+      -- Note: we will need to revisit this when we need to support
+      -- other chipset suppliers who may do things differently.
+      rssi = rssi > 0 and rssi + QCA_RSSI_OFFSET or rssi
+      return WM.rssi_to_rcpi( rssi )
+   end
+   if nb then
+      -- First copy header
+      for _,field in ipairs{ "uuid", "type", "TS" } do
+         cs[field] = nb[field]
+      end
+      cs.data = {}
+      local node = all_nodes[nb.uuid]
+      if node == nil then
+         error( "Couldn't determine Node for "..tostring( nb.uuid ))
+      end
+
+      cs.data.client_bssid = get_sta_bssid_for( nb.uuid )
+      cs.data.survey_results = {}
+      for i,neighbor in ipairs( nb.data.neighbor ) do
+         cs.data.survey_results[i] = {
+            band       = neighbor.band,
+            channel    = tonumber( neighbor.channel ),
+            macAddress = neighbor.bssid,
+            rcpi       = rssi_to_rcpi( neighbor.rssi ),
+            -- Ignore ssid
+         }
+      end
+   end
+   return cs
+end
+
+out:write( json.stringify( nb_to_client_survey( io.stdin )))

@@ -1,0 +1,51 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+-- genjson - Generate JSON from command line arguments
+--
+-- Copyright (c) 2016, Belkin Inc. All rights reserved.
+--
+
+local cli = require "cliargs"
+local JSPayload = require "json_payload"
+local Args = require "json_payload.args"
+
+local default_attribute = "topic"
+local default_subs_file = "/var/config/subscriber.subs"
+local prog_name = string.match( arg[0], ".*/(.*)" )
+
+local outer = {
+   outer_object = "o",
+   outer_array = "a"
+}
+outer[outer.outer_object] = {
+   prefix = "{",
+   suffix = "}"
+}
+outer[outer.outer_array] = {
+   prefix = "[",
+   suffix = "]"
+}
+local outer_default = outer.outer_object
+
+local function _main()
+   local status = 0
+   local args = Args:new()
+   -- Add custom command line option
+   args.cli:option( "-o,--outer=[o,a]",
+                    "Outermost entity is Array or Object", outer_default )
+   local opts = args:parse()
+   if not outer[opts.args.outer] then error "Bad outer choice" end
+   opts.outer = outer[opts.args.outer]
+
+   print( JSPayload:new(opts.outer):add_list( opts.raw_entities ))
+
+   return status
+end
+
+local ok,status = pcall( _main )
+
+if not ok then
+   io.stderr:write( string.format( "Error: %s\n", tostring( status )))
+   cli.print_help()
+   os.exit( 1 )
+end

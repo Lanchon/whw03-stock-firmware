@@ -1,0 +1,161 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+-- omsg-conf - Retrieve selected attribute values from MQTT subscriptions file
+--
+-- Copyright (c) 2016, Belkin Inc. All rights reserved.
+--
+
+local cli = require "cliargs"
+
+local etc_subs_dir = "/etc/subscriber.d/"
+local running_subs_dir = "/var/config/"
+local default_subs_file      = running_subs_dir .. "subscriber.subs"
+local master_subs_file       = etc_subs_dir     .. "master.subs"
+local slave_subs_file        = etc_subs_dir     .. "slave.subs"
+local unconfigured_subs_file = etc_subs_dir     .. "unconfigured.subs"
+
+local default_attribute = "topic"
+
+-- Set up command line options
+cli:set_name( "omsg-conf" )
+cli:argument( "NAME", 'Look up the value of NAME')
+cli:option( "-a,--attribute=ATTR", "Select Attribute",      default_attribute )
+cli:option( "-f,--file=FILENAME",  "Subscribers file",      default_subs_file )
+cli:flag(   "-m,--master",         "Use master subscription data"             )
+cli:flag(   "-s,--slave",          "Use slave subscription data"              )
+cli:flag(   "-u,--unconfigured",   "Use unconfigured subscription data"       )
+cli:flag(   "-d,--debug",          "Show debugging output"                    )
+cli:flag(   "-V,--verbose",        "Be verbose"                               )
+
+-- Return number of parameters that evaluate as true
+local function count_trues( ... )
+   local cnt = 0
+   for i=1, select('#',...) do
+      if select(i,...) then cnt = cnt + 1 end
+   end
+   return cnt
+end
+
+-- Parse command line options.
+-- Returns a table or attribute/value pairs embodying the options
+local function parseArgs()
+   local args, err = cli:parse()
+
+   if not args and err then
+      -- If err starts with "Usage:" then it not really an error, it's
+      -- just the result of the user requesting Help
+      if string.sub( err, 1, 6 ) ~= 'Usage:' then
+         -- Real error
+         print( cli.name .. ": " .. err )
+         cli:print_help()
+      else
+         -- Just "-h" or "--help"
+         print( err )
+      end
+      os.exit(1)
+   else
+      local opts = {
+         debug   = not not args.debug,
+         verbose = not not args.verbose,
+         name    = args.NAME,
+         fname   = args.file,
+         attr    = args.attribute,
+      }
+      if count_trues( args.master, args.slave, args.unconfigured ) > 1 then
+         print( "Error: -m, -s & -u are mutually exclusive; use only 1" )
+         cli:print_help()
+         os.exit(1)
+      end
+      if args.master then opts.fname = master_subs_file end
+      if args.slave  then opts.fname = slave_subs_file  end
+      if args.unconfigured  then opts.fname = unconfigured_subs_file  end
+      -- If debug is set, dump out the options now
+      if opts.debug then
+         for k,v in pairs( opts ) do
+            print( string.format( "%12s: '%s'", k, tostring( v )))
+         end
+      end
+      return opts
+   end
+end
+
+-- Load the Subscriptions
+-- Opens the specified file and interprets it into a table of subscriptions
+-- Each subscriptions has a name element to key on.
+-- Return the subscriptions table
+-- Throws an error if a problem is encountered
+local function loadSubs( name )
+   local file = io.open( name )
+   if file == nil then
+      error( string.format( "File '%s' not found", name ), 2 )
+   end
+
+   local raw_subs = file:read( "*all" )
+   if( raw_subs == nil ) then
+      error( string.format( "Problem reading subscriptions file '%s'", name ))
+   end
+
+   local subs_func, err = loadstring( "return { " .. raw_subs .. "}" )
+   if subs_func == nil then
+      error( string.format( "Unable to parse subscriptions: %s", err ), 0 )
+   end
+
+   -- Sandbox the function representing the subscriptions into an empty table.
+   -- This prevents access to any functions or data not within the file
+   setfenv( subs_func, {} )
+   local ok, subs = pcall( subs_func )
+   if not ok then
+      error( string.format( "Error processing '%s': %s", name, tostring( subs )), 0 )
+   end
+
+   return subs
+end
+
+-- Fund a subscription by name in a subscriptions table
+function findSubByName( subs, name )
+   local found = nil
+   for i,sub in ipairs( subs ) do
+      if sub.name == name then
+         return sub
+      end
+   end
+
+   error( string.format( "No subscription named '%s'\n", tostring( name )), 0 )
+end
+
+local function _main()
+   local opts = parseArgs()
+   local subs = loadSubs( opts.fname )
+   local sub = findSubByName( subs, opts.name )
+   local value = sub[ opts.attr ]
+   local status = 0
+
+   if value then
+      value = tostring( value )
+      if opts.verbose then
+         print( string.format( "Subscription name: '%s', Attribute: '%s', Value: '%s'",
+                               opts.name, opts.attr, value ))
+      else
+         print( value )
+      end
+   else
+      status = 1
+      local msg = string.format( "No value found for attribute '%s'", opts.attr )
+      if opts.debug then
+         error( msg )
+      end
+      if opts.verbose then
+         print( msg )
+      end
+   end
+
+   if opts.verbose then print( "Done" ) end
+   return status
+end
+
+local ok,status = pcall( _main )
+
+if not ok then
+   io.stderr:write( string.format( "Error: %s", tostring( status )))
+   os.exit( 1 )
+end

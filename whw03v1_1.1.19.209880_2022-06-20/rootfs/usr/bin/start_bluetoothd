@@ -1,0 +1,39 @@
+#!/bin/sh
+# Copyright (C) 2007 OpenWrt.org
+
+#start after dbus (60)
+CMDNAME=bluetoothd.init
+PROG=/usr/sbin/bluetoothd
+DBUS_DIR=/var/run/dbus
+DBUS_DAEMON=dbus-daemon
+start_dbus_daemon() {
+    if [ ! -d $DBUS_DIR ]; then
+        mkdir $DBUS_DIR
+        echo "$CMDNAME: $DBUS_DIR created"
+    else
+        echo "$CMDNAME: $DBUS_DIR directory already exists"
+    fi
+    PID=`pgrep $DBUS_DAEMON`
+    if [ "$PID" == "" ]; then
+        $DBUS_DAEMON --system
+        echo "$CMDNAME: $DBUS_DAEMON started"
+    else
+        echo "$CMDNAME: $DBUS_DAEMON already working"
+    fi
+}
+
+start_bluetoothd() {
+	$PROG --compat &
+}
+
+start_obexd() {
+	export DBUS_SESSION_BUS_ADDRESS="unix:path=/var/run/dbus/system_bus_socket"
+	obexd
+}
+
+SMART_MODE=$1
+
+start_dbus_daemon
+start_bluetoothd
+sleep 1
+hcisetup $SMART_MODE

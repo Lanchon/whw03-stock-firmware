@@ -1,0 +1,292 @@
+#!/usr/bin/lua
+--  -*- lua -*-
+--  Creates the network topology using the file system. The data is obtained from mqtt.
+--
+
+function dumpTab(t, msg, level)
+  function indent() io.write( string.rep("-", level)) end
+  if level == nil then level = 0 end
+  if msg then
+    indent()
+    print(msg)
+  end
+  for k,v in pairs(t) do
+    if type(v) == "table" then
+      dumpTab(v, k, level + 4)
+    else
+      indent()
+      print(k,v)
+    end
+  end
+end
+
+function indent(spaces)
+  if spaces == nil then spaces = 0 end
+  io.write(string.rep(" ", spaces))
+end
+
+function write(fp, mode, str)
+  local file = io.open(fp, mode)
+  if file then
+    file:write(str)
+    file:close(file)
+  end
+end
+
+function getTable(table, origin, key, depth)
+  if depth == nil then depth = 1 end
+  if key == origin then
+    return table
+  else
+    for k,v in pairs(table) do
+      if type(v) == 'table' and depth > 0 then
+        local found = getTable(v, origin, k, depth - 1)
+        if found then
+          return found
+        end
+      end
+    end
+  end
+end
+
+function printTable(table)
+  for k,v in pairs(table) do
+    print(k,v)
+  end
+end
+
+function checkField(table, key)
+  for k,v in pairs(table) do
+    if key == k then
+      return true
+    end
+  end
+end
+
+function getField(table, key)
+  for k,v in pairs(table) do
+    if key == k then
+      return v
+    end
+  end
+end
+
+function mkdir(path)
+  local tokens = tokenize(path, "/")
+  local numTokens = table.getn(tokens)
+  local current_dir = ""
+
+
+  for i=1,numTokens do
+    current_dir = current_dir.."/"..tokens[i]
+    if not LFS.chdir(current_dir) then
+      if not LFS.mkdir(current_dir) then
+        return false
+      end
+    end
+  end
+  return true
+end
+
+function rmdir(path)
+  if LFS.chdir(path) then
+    for obj in LFS.dir(path) do
+      local file_path = path..'/'..obj
+      if obj ~= "." and obj ~= ".." then
+        if LFS.attributes(file_path, 'mode') == 'file' then
+          os.remove(file_path)
+        elseif LFS.attributes(file_path, 'mode') == 'directory' then
+          rmdir(file_path)
+        end
+      end
+    end
+  end
+end
+
+function findir(uuid, path)
+  if LFS.chdir(path) then
+    for obj in LFS.dir(path) do
+      local file_path = path..'/'..obj
+      if obj ~= "." and obj ~= ".." then
+        if LFS.attributes(file_path, 'mode') == 'directory' then
+          local len_fp = string.len(file_path)
+          local len_uuid = string.len(uuid)
+
+          local start = len_fp - len_uuid + 1
+          local stop = len_fp
+          local str = string.sub(file_path, start, stop)
+
+          if str == uuid then
+            return file_path
+          else
+            local found = findir(uuid, file_path)
+            if found then
+              return found
+            end
+          end
+        end
+      end
+    end
+  end
+end
+
+function tokenize(str, delimiter)
+  local t = {}
+  for token in str:gmatch("[%w%-]+") do
+    table.insert(t,token)
+  end
+  return t
+end
+
+function checkAuthorized(device, authorized_devices)
+  for k,v in pairs(authorized_devices) do
+    if device == v then
+      return true
+    end
+  end
+end
+
+function getAuthorized()
+  local t = {}
+
+  local sqlite3 = require("lsqlite3")
+  local db = sqlite3.open(SMARTCONNECT_DB)
+
+  if db ~= nil then
+    for row in db:rows("SELECT uuid FROM devices") do
+      for k,v in pairs(row) do
+        table.insert(t,v)
+      end
+    end
+    db:close()
+    return t 
+  end   
+end
+
+function populate_node_data()
+  for k,v in pairs(AUTHORIZED) do
+    local dir = findir(v, ROOT_DIR)
+    local node_data = NODES[v]
+    local nb_data = NB[v]
+
+    if v == MASTER_UUID then
+      node_data = NODES["master"]
+    end
+
+    if node_data then
+      local str_node_data = JSON.stringify(node_data)
+      local fp = dir.."/"..NODE_FILE
+      write(fp, "w+", str_node_data)
+    end
+
+    if nb_data then
+      local str_nb_data = JSON.stringify(nb_data)
+      local fp = dir.."/"..NODE_NB_FILE
+      write(fp, "w+", str_nb_data)
+    end
+  end
+end
+
+function populate_client_data()
+  for k,v in pairs(CLIENTS) do
+    local uuid = getField(v, "uuid")
+    local mac = string.gsub(getField(v, "sta_bssid"), ":", "-")
+    local dir = findir(uuid, ROOT_DIR)
+    local client_data = v
+    local nb_data = CNB[mac]
+
+    if dir then
+      if client_data then
+        local str_client_data = JSON.stringify(client_data)
+        local fp = dir.."/"..CLIENT_FILE
+        write(fp, "w+", str_client_data)
+      end
+
+      if nb_data then
+        local str_nb_data = JSON.stringify(nb_data)
+        local fp = dir.."/"..CLIENT_NB_FILE
+        write(fp, "w+", str_nb_data)
+      end
+    end
+  end
+end
+
+function map_clients(uuid, path)
+  for k,v in pairs(CLIENTS) do
+    local status = getField(v,"status")
+    if status then
+      local links = getTable(v,"links")
+
+      for k,v in pairs(links) do
+        active = getField(v,"active")
+        if active then
+          local parent = getTable(v,"to")
+          local client = getTable(v,"from")
+
+          local parent_uuid = getField(parent,"device")
+          local client_uuid = getField(client,"device")
+
+          if parent_uuid == uuid then
+            mkdir(path.."/clients/"..client_uuid)
+          end
+        end
+      end
+    end
+  end
+end
+
+function map_authorized(uuid, fp)
+  -- Create client directories --
+  map_clients(uuid, fp)
+
+  -- Create children directories --
+  for k,v in pairs(LINKS) do
+    local active = getField(v,"active")
+    if active then
+      local parent = getTable(v,"to")
+      local child = getTable(v,"from")
+      local parent_uuid = getField(parent,"device")
+      local child_uuid = getField(child,"device")
+
+      if parent_uuid == uuid and checkAuthorized(child_uuid, AUTHORIZED) then
+        local child_fp = fp.."/"..child_uuid
+
+        mkdir(child_fp)
+        map_authorized(child_uuid, child_fp)
+      end
+    end
+  end
+end
+
+function make_topology()
+  rmdir(MASTER_PATH)
+  map_authorized(MASTER_UUID, MASTER_PATH)
+  populate_node_data()
+  populate_client_data()
+end
+
+ROOT_DIR = "/tmp/topology"
+SMARTCONNECT_DB = "/var/config/smartconnect/server.sql"
+NODE_NB_FILE = "neighbor_report"
+NODE_FILE = "node_state"
+CLIENT_NB_FILE = "neighbor_report"
+CLIENT_FILE = "client_state"
+
+LFS = require("lfs")
+JSON = require("libhdkjsonlua")
+NW = require("nodes.tess.network")
+SS = NW.snapshot()
+CNB = NW.load_client_neighbor_data()
+
+NODES = getTable(SS,"nodes")
+LINKS = getTable(SS,"links")
+CLIENTS = getTable(SS,"clients")
+NB = getTable(SS,"neighbors")
+MASTER = getTable(NODES,"master")
+MASTER_UUID = getField(MASTER,"uuid")
+MASTER_PATH = ROOT_DIR.."/"..MASTER_UUID
+AUTHORIZED = getAuthorized()
+
+rmdir(MASTER_PATH)
+make_topology()
+

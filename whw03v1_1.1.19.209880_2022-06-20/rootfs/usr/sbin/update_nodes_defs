@@ -1,0 +1,73 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Nodes Cached Firmware Update
+#
+#-----------------------------------------------------------------------------------------------
+
+PATH_DOWNLOADS=/var/config/downloads
+
+CFG_FIRMWARE_VERSION=fwup_firmware_version
+CFG_NEW_FIRMWARE_VERSION=fwup_newfirmware_version
+CFG_NEW_FIRMWARE_DATE=fwup_newfirmware_date
+CFG_NEW_FIRMWARE_DETAILS=fwup_newfirmware_details
+CFG_NEW_FIRMWARE_STATUS_DETAILS=fwup_newfirmware_status_details
+CFG_LAST_CHECK=fwup_lastsuccess_checktime
+
+SYS_MASTER_REQUEST=fwup_master_request
+SYS_SLAVE_STATUS=fwup_slave_status
+SYS_UPDATE_STATE=fwup_update_state
+SYS_UPDATE_ID=fwup_update_id
+SYS_STATE=fwup_state
+SYS_PROGRESS=fwup_progress
+SYS_NEW_FIRMWARE_URL=fwup_new_firmware_url
+SYS_WAIT_FOR_REBOOT=fwup_wait_for_reboot
+SYS_SLAVE_OFFLINE=slave_offline
+SYS_BACKHAUL_PARENT_IP=backhaul::parent_ip
+SYS_BACKHAUL_STATUS_DATA=backhaul::status_data
+SYS_STATE_CHECKING=1
+SYS_STATE_DOWNLOADING=3
+SYS_STATE_FLASHING=4
+SYS_STATE_REBOOT=5
+	
+FIELD_MASTER=master
+FIELD_SLAVE=slave
+FIELD_FIRMWARE=firmware
+FIELD_NEW_FIRMWARE=new_firmware
+FIELD_UPDATE_ID=update_id
+FIELD_REQUEST=request
+FIELD_UPDATE=update
+FIELD_CHECK=check
+FIELD_WAIT=wait
+FIELD_STATE=state
+FIELD_READY=ready
+FIELD_PROGRESS=progress
+FIELD_CHECKING=checking
+FIELD_UPDATING=updating
+FIELD_REBOOT=reboot
+FIELD_DONE=done
+FIELD_STOPPED=stopped
+FIELD_OPTION=option
+FIELD_CACHE=cache
+FIELD_NO_CACHE=no_cache
+
+Debug()
+{
+#   return
+    echo "[update] $@" >> /dev/console
+}
+
+StopUpdate()
+{
+    Debug "$FIELD_STOPPED"
+    Debug
+
+    syscfg set $CFG_NEW_FIRMWARE_DETAILS $FIELD_STOPPED 
+    sysevent set $SYS_UPDATE_STATE
+    exit
+}
+
+trap StopUpdate SIGINT SIGSTOP
+
+#-----------------------------------------------------------------------------------------------

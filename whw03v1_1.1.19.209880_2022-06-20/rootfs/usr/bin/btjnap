@@ -1,0 +1,56 @@
+#!/bin/sh
+
+###################
+##  Check option
+###################
+while getopts ":a:u:j:" opt; do
+    case $opt in
+        a) ACTION=$OPTARG ;;
+
+        u) AUTH=$OPTARG ;;
+
+        j) JSON=$OPTARG ;;
+
+        :) echo "No argument for -$OPTARG" >&2
+        ;;
+
+        \?) echo "Invalid Option -$OPTARG" >&2
+        exit 1
+        ;;
+    esac
+done
+shift $((OPTIND-1))
+#echo Arguments: $*
+
+ACTION=`echo $ACTION | sed -e "s/X-JNAP-Action[ ]*:[ ]*//"`
+AUTH=`echo $AUTH | sed -e "s/X-JNAP-Authorization[ ]*:[ ]*//"`
+
+###############
+##  Set env
+###############
+
+## jnap_cgi_context
+export JNAP_CGI_MODULES_PATH="/JNAP/modules/wan"
+## jnap_cgi
+###export GATEWAY_INTERFACE="/CGI/1.1"
+export REQUEST_METHOD="POST"
+export REQUEST_URI="/JNAP"
+#export REMOTE_ADDR=""
+#export HTTP_SOAPACTION=""
+#export HTTP_AUTHORIZATION=""
+#export HTTP_X_JNAP_ACTION="http://linksys.com/jnap/nodes/smartmode/GetDeviceMode"
+#export HTTP_X_JNAP_AUTHORIZATION="Basic YWRtaW46YWRtaW4="
+export HTTP_X_JNAP_ACTION="$ACTION"
+export HTTP_X_JNAP_AUTHORIZATION=$AUTH
+#export HTTP_X_JNAP_SESSION=""
+#export ROLE=""
+#export JNAP_CGI_REMOTE=""
+
+export JSON_DATA=$JSON
+export CONTENT_LENGTH=`echo -n "$JSON_DATA" | wc -c`
+
+## execute remote
+#echo $JSON_DATA | /www/JNAP/index.cgi
+#RESULT=`echo $JSON_DATA | jnap`
+RESULT=`echo $JSON_DATA | /www/JNAP/index.cgi`
+echo -n $RESULT

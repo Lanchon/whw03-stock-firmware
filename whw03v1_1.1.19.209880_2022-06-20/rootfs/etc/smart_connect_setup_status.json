@@ -1,0 +1,8 @@
+{
+  "type":"status",
+  "TS":"<date>",
+  "data": {
+    "uuid":"<uuid>",
+    "status": "<status>"
+  }
+}

@@ -1,0 +1,52 @@
+#!/bin/sh
+#
+# Copyright (c) 2021, Belkin Inc. All rights reserved.
+#
+# Publish stdin to a specified topic
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PROGNAME=$(basename $0)
+
+LOCAL_SCANNED_BOT_LIST="/tmp/local_scanned_bot_list"
+PUB_TOPIC="motion/${TOPIC_UUID}/scanned_bots"
+
+cat $LOCAL_SCANNED_BOT_LIST | publish $PUB_TOPIC
+
+# if [ -f "$LOCAL_SCANNED_BOT_LIST" ]; then
+#     # Create bot objects to place in array
+#     BOTS=""
+#     while read line
+#     do
+#         MAC_ADDRESS="$( echo $line | cut -d ' ' -f 2 )"
+#         QUALITY="$( echo $line | cut -d ' ' -f 3-4 )"
+# 
+#         if [ -z "$BOTS" ]; then
+#             BOTS="$( jsongen -s "mac_address":"$MAC_ADDRESS" -s "quality":"$QUALITY" )"
+#         else
+#             BOTS="$BOTS, $( jsongen -s "mac_address":"$MAC_ADDRESS" -s "quality":"$QUALITY" )"
+#         fi
+#     done < "$LOCAL_SCANNED_BOT_LIST"
+# 
+#     BOTS_ARRAY=$( jsongen --outer=a --array-item="$BOTS" )
+# 
+#     if [ $DEBUG ];then
+#         echo "Options:"
+#         echo "   BIND_ADDR: $BIND_ADDR"
+#         echo "   HOST_PORT: $HOST_PORT"
+#         echo "   HOST_ADDR: $HOST_ADDR"
+#         echo "   TOPIC    : $PUB_TOPIC"
+#         echo "   STATE    : $STATE"
+#     fi
+# 
+#     [ $DEBUG ] && echo "${PROG_NAME}: publishing scanned bots"
+# 
+#     mk_infra_payload \
+#         -t status \
+#         -r "bots:$BOTS_ARRAY" | \
+#         publish $PUB_TOPIC
+# else
+#     echo "Error: $LOCAL_SCANNED_BOT_LIST does not exist! Nothing to publish."
+# fi

@@ -1,0 +1,1 @@
+/JNAP/modules/smartmode_server.lua

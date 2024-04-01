@@ -1,0 +1,80 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+--
+-- Copyright (c) 2017, Belkin Inc. All rights reserved.
+--
+--! @file
+
+-- Keep prog_name global for use in error messages
+prog_name = string.match( arg[0], ".*/(.*)" )
+
+local cli     = require "cliargs"
+local nutil   = require 'nodes.util'
+local nulldp  = require'nodes.util.lldp'
+local json    = require 'libhdkjsonlua'
+local numac   = require 'nodes.util.mac'
+
+local errout  = nutil.errout
+local debout  = nutil.debout
+local verbout = nutil.verbout
+local Mac     = numac.Mac
+
+args = {}
+
+function parse_args()
+   -- Set up command line options
+   cli:set_name( prog_name                                              )
+   cli:set_description( 'Convert LLDP text data to JSON'                )
+   cli:argument( "INPUT", "Path to file"                                )
+   cli:option( "-i,--interface=INTF", "Set interface name in JSON"      )
+   cli:option( "-m,--mac=MAC",        "Set MAC in JSON"                 )
+   cli:flag(   "-d,--debug",     "Show debugging output", false         )
+   cli:flag(   "-v,--verbose",   "Be verbose",            false         )
+   cli:flag(   "-h,--help",      "This help"                            )
+
+   local args, err = cli:parse()
+
+   if not args and err then
+      errout( err )
+      os.exit( 0 )
+   else
+      local opts = {
+         debug   = not not args.debug,
+         verbose = not not args.verbose,
+         fname   = args.INPUT,
+         mac     = args.mac,
+         intf    = args.interface
+      }
+      -- If debug is set, output the options
+      if opts.debug then
+         errout( "%s options: ", cli.name )
+         for k,v in pairs( opts ) do
+            errout( "%12s: (%s)", k, tostring( v ))
+         end
+      end
+      return opts
+   end
+end
+
+function _main()
+   opts = parse_args()
+
+   verbout( "Reading from file '%s'", opts.fname )
+   local lldp = nulldp:new( opts.fname )
+   if not lldp then error( "Could not load file '"..tostring(opts.fname).."'") end
+
+   local json_data = lldp:json_encapsulate()
+   if not json_data then error "Could not encapsulate LLDP data" end
+   if opts.intf then json_data.data.intf = opts.intf end
+   if opts.mac then json_data.data.mac = tostring( Mac:new( opts.mac )) end
+   print( json.stringify( json_data ))
+   return 0
+end
+
+ok, status = pcall( _main )
+if not ok then
+   io.stderr:write( string.format( "Error: %s", tostring( status )))
+   status = 1
+end
+
+os.exit( status )

@@ -1,0 +1,91 @@
+#!/bin/sh
+
+PROGNAME=$(basename $0)
+BRIDGE_MODE_VAR="bridge_mode"
+
+usage() {
+    cat <<EOF
+$PROGNAME sets the WAN mode to bridge or router
+If the mode is unchanged, nothing will happen.
+If the mode changes, router will reboot!
+Usage:
+        $PROGNAME {options} $PROGNAME
+Where {options} are one or more of:
+  -b          Set WAN mode to bridge
+  -r          Set WAN mode to router
+  -g          Get (display) current WAN mode
+  -n          Dry run; don't change mode, just show command
+  -h          This help
+Note: If both -b & -r are specified the last one wins.
+EOF
+}
+
+BRIDGE_DATA='{
+  "wanType": "Bridge",
+  "bridgeSettings": {
+    "useStaticSettings": false
+  },
+  "mtu": 0
+}'
+
+ROUTER_DATA='{
+  "wanType": "DHCP",
+  "mtu": 0
+}'
+
+USERNAME="admin"
+[ -x syscfg ] && PASSWORD="$(syscfg get device::admin_password)"
+PASSWORD="${PASSWORD:-admin}"
+AUTH_TOKEN="$(echo -n "${USERNAME}:${PASSWORD}" | base64)"
+
+set_mode () {
+    DATA="$1"
+    [ $DEBUG ] && printf "JNAP payload data: '%s'.\n" "$DATA"
+    $FAKE curl                                                            \
+        --insecure                                                        \
+        --interface lo                                                    \
+        --connect-timeout 3                                               \
+        --location "http://localhost/JNAP/"                               \
+        -d "$DATA"                                                        \
+        -H "X-JNAP-ACTION: http://linksys.com/jnap/router/SetWANSettings" \
+        -H "X-JNAP-Authorization: Basic ${AUTH_TOKEN}"
+}
+
+show_mode () {
+    local MODE="$(syscfg get $BRIDGE_MODE_VAR)"
+    local FMT="%s Mode (%s = %s)\n"
+    local MODE_NAME="Router"
+    [ "$MODE" == "1" ] && MODE_NAME="Bridge"
+    printf "$FMT" "$MODE_NAME" "$BRIDGE_MODE_VAR" "$MODE"
+}
+
+MODE_DATA=""
+while getopts ":bdgnrsh" opt;do
+    case $opt in
+        b)  MODE_DATA="$BRIDGE_DATA" ;;
+        d)  DEBUG=1 ;;
+        r)  MODE_DATA="$ROUTER_DATA" ;;
+        g)  GET=1 ;;
+        n)  FAKE="echo" ;;
+        h) usage ; exit 0 ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+
+if [ "$GET" ]; then
+    show_mode
+elif [ "$MODE_DATA" ]; then
+    set_mode "$MODE_DATA"
+else
+    usage
+    exit 1
+fi

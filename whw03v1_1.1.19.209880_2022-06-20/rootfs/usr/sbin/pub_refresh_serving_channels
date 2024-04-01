@@ -1,0 +1,13 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish "all guys, report which channels you are serving with" mesage to all nodes.
+
+# Set common values
+source /etc/init.d/sub_pub_funcs.sh
+
+PUB_TOPIC="$(omsg-conf -m REFRESH_SERVING_CHANNELS | sed "s/+/$TOPIC_UUID/" )"
+validate PUB_TOPIC
+
+mk_infra_payload -t status -u "$UUID" | publish "$PUB_TOPIC"

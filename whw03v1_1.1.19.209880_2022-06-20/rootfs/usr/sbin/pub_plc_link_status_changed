@@ -1,0 +1,35 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish PLC device status
+#
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+STATUS="$(echo "$1" | cut -f1 -d,)"
+
+if [ "$STATUS" = "down" ] ; then
+    STATUS=false
+    MAC_ID="none"
+    CONFIGURED=false
+    NUM_PLC="0"
+elif [ "$STATUS" = "up" ] ; then
+    STATUS=true
+    MAC_ID="`echo $1 | cut -d ',' -f4`"
+    VERSION="`echo $1 | cut -d ',' -f5`"
+    CONFIGURED="`echo $1 | cut -d ',' -f6`"
+    NUM_PLC="`echo $1 | cut -d ',' -f7`"
+fi
+
+MSG_PUB="{\"type\":\"plc\",\"detected\":$STATUS,\"data\":{\"mac_addr\":\"$MAC_ID\",\"configured\":$CONFIGURED,\"num_plc\":\"$NUM_PLC\"}}"
+validate MSG_PUB
+
+UUID="$(syscfg get device::uuid)"
+validate UUID
+
+PUB_TOPIC="network/${UUID}/PLC/status"
+validate PUB_TOPIC
+
+echo "$PUB_TOPIC $MSG_PUB"
+echo "$MSG_PUB" | publish "$PUB_TOPIC"

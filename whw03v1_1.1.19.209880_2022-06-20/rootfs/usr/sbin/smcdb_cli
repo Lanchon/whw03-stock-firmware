@@ -1,0 +1,387 @@
+#!/usr/bin/lua
+-- -*- lua -*-
+
+local cli       = require('cliargs')
+local sqlite3   = require('lsqlite3')
+local lfs       = require('lfs')
+local sysctx    = require('libsysctxlua')
+
+local prog_name = string.match( arg[0], ".*/(.*)" )
+
+local opts      = {}
+local CLIENT_DIR = '/var/config/smartconnect/'
+local CLIENT_DB = '/var/config/smartconnect/client.sql'
+local CONFIG_VAP_TBL = 'config_vap'
+local PRE_AUTH_TBL = 'pre_auth'
+local AUTH_TBL = 'auth'
+
+
+local function check_db(db_name)
+    if lfs.attributes(db_name) then
+        return true
+    else
+        return false
+    end
+end
+
+local function check_table(db, table_name)
+    local sql = "select count(*) from sqlite_master where type='table' and name='" .. table_name .. "'"
+    for row in db:nrows(sql) do
+        if row then
+            for k, v in pairs(row) do
+                if k == 'count(*)' then
+                    if v == 0 then
+                        return false
+                    elseif v == 1 then
+                        return true
+                    end
+                end
+            end
+        end
+    end
+end
+
+
+local function db_to_json(output)
+    local db
+    local smart_connect = {}
+    local config_vap = {}
+    local pre_auth = {}
+    local auth = {}
+    local sql = ""
+
+    if check_db(CLIENT_DB) then
+        db = sqlite3.open(CLIENT_DB)
+        if check_table(db, CONFIG_VAP_TBL) then
+            sql = "select * from " .. CONFIG_VAP_TBL
+            for row in db:nrows(sql) do
+                if row then
+                    config_vap[row.idx+1] = {
+                        ssid = row.ssid,
+                        password = row.password,
+                        security_mode = row.security_mode
+                    }
+                end
+            end
+        end
+        if check_table(db, PRE_AUTH_TBL) then
+            sql = "select * from " .. PRE_AUTH_TBL
+            for row in db:nrows(sql) do
+                if row then
+                    pre_auth[row.idx+1] = {
+                        login = row.login,
+                        password = row.password
+                    }
+                end
+            end
+        end
+        if check_table(db, AUTH_TBL) then
+            sql = "select * from " .. AUTH_TBL
+            for row in db:nrows(sql) do
+                if row then
+                    auth[row.idx+1] = {
+                        login = row.login,
+                        password = row.password
+                    }
+                end
+            end
+        end
+        db:close()
+
+        smart_connect = {
+            smart_connect = {
+                config_vap = config_vap,
+                pre_auth = pre_auth,
+                auth = auth
+            }
+        }
+
+        file = io.open(output, 'w')
+        if file then
+            file:write(require('libhdkjsonlua').stringify(smart_connect))
+            file:write("\n")
+            file:close()
+        end
+    else
+        print(prog_name .. " error: " .. CLIENT_DB .. " is not existed")
+        os.exit(1)
+    end
+end
+
+local function replace_client_db(config_vap, pre_auth, auth)
+    local db
+    local sql
+    local err = nil
+
+    if check_db(CLIENT_DB) then
+        db = sqlite3.open(CLIENT_DB)
+        if check_table(db, CONFIG_VAP_TBL) then
+            if next(config_vap) then
+                sql = string.format("replace into %s (idx, ssid, password, security_mode) values (%d, '%s', '%s', '%s')", 
+                                    CONFIG_VAP_TBL, 0, config_vap.ssid, config_vap.password, config_vap.security_mode)
+                db:exec(sql)
+            end
+        else
+            err = CONFIG_VAP_TBL
+        end
+        if check_table(db, PRE_AUTH_TBL) then
+            if next(pre_auth) then
+                sql = string.format("replace into %s (idx, login, password) values (%d, '%s', '%s')", 
+                                    PRE_AUTH_TBL, 0, pre_auth.login, pre_auth.password)
+                db:exec(sql)
+            end
+        else
+            err = PRE_AUTH_TBL .. ', ' .. (err or '')
+        end
+        if check_table(db, AUTH_TBL) then
+            if next(auth) then
+                sql = string.format("replace into %s (idx, login, password) values (%d, '%s', '%s')", 
+                                    AUTH_TBL, 0, auth.login, auth.password)
+                db:exec(sql)
+            end
+        else
+            err = AUTH_TBL .. ', ' .. (err or '')
+        end
+        db:close()
+    else
+        err = CLIENT_DB
+    end
+
+    if err then
+        err = err .. " is not existed"
+    end
+
+    return err
+end
+
+local function get_client_db()
+    local db
+    local sql
+    local err = nil
+    local config_vap = {}
+    local pre_auth = {}
+    local auth = {}
+
+    if check_db(CLIENT_DB) then
+        db = sqlite3.open(CLIENT_DB)
+        if check_table(db, CONFIG_VAP_TBL) then
+            sql = "select * from " .. CONFIG_VAP_TBL
+            for row in db:nrows(sql) do
+                if row then
+                    config_vap = {
+                        ssid = row.ssid,
+                        password = row.password,
+                        security_mode = row.security_mode
+                    }
+                end
+            end
+        else
+            err = CONFIG_VAP_TBL
+        end
+        if check_table(db, PRE_AUTH_TBL) then
+            sql = "select * from " .. PRE_AUTH_TBL
+            for row in db:nrows(sql) do
+                if row then
+                    pre_auth = {
+                        login = row.login,
+                        password = row.password
+                    }
+                end
+            end
+        else
+            err = PRE_AUTH_TBL .. ', ' .. (err or '')
+        end
+        if check_table(db, AUTH_TBL) then
+            sql = "select * from " .. AUTH_TBL
+            for row in db:nrows(sql) do
+                if row then
+                    auth = {
+                        login = row.login,
+                        password = row.password
+                    }
+                end
+            end
+        else
+            err = AUTH_TBL .. ', ' .. (err or '')
+        end
+        db:close()
+    else
+        err = CLIENT_DB
+    end
+
+    if err then
+        err = err .. " is not existed"
+    end
+
+    return err, config_vap, pre_auth, auth
+end
+
+local function sync_db_syscfg(direction)
+    local err_msg
+    local config_vap = {}
+    local pre_auth = {}
+    local auth = {}
+
+    local sc = sysctx.new()
+
+    if direction == 'in' then
+        -- Get config_vap and pre_auth, auth values from the syscfg and then update them to the db.
+        sc:readlock()
+        config_vap = {
+            ssid = sc:get('smart_connect::configured_vap_ssid') or '',
+            password = sc:get('smart_connect::configured_vap_passphrase') or '',
+            security_mode = sc:get('smart_connect::configured_vap_security_mode') or ''
+        }
+        pre_auth = {
+            login = sc:get('smart_connect::pre_auth_login'),
+            password = sc:get('smart_connect::pre_auth_pass')
+        }
+        auth = {
+            login = sc:get('smart_connect::auth_login'),
+            password = sc:get('smart_connect::auth_pass')
+        }
+        sc:rollback()
+
+        -- Update those info to the db.
+        err_msg = replace_client_db(config_vap, pre_auth, auth)
+    elseif direction == 'out' then
+        -- Get config_vap and pre_auth, auth credential values from the db and then commit them to the syscfg.
+        err_msg, config_vap, pre_auth, auth = get_client_db()
+
+        sc:writelock()
+        if next(config_vap) then
+            sc:set('smart_connect::configured_vap_ssid', config_vap.ssid)
+            sc:set('smart_connect::configured_vap_passphrase', config_vap.password)
+            sc:set('smart_connect::configured_vap_security_mode', config_vap.security_mode)
+        end
+        if next(pre_auth) then
+            sc:set('smart_connect::pre_auth_login', pre_auth.login)
+            sc:set('smart_connect::pre_auth_pass', pre_auth.password)
+        end
+        if next(auth) then
+            sc:set('smart_connect::auth_login', auth.login)
+            sc:set('smart_connect::auth_pass', auth.password)
+        end
+        sc:commit()
+    end
+
+    if err_msg then
+        print(prog_name .. " error: " .. err_msg)
+        os.exit(1)
+    end
+end
+
+local function update_config_vap(options)
+    local db
+    local sql = nil
+    local err = nil
+
+    if check_db(CLIENT_DB) then
+        db = sqlite3.open(CLIENT_DB)
+        if check_table(db, AUTH_TBL) then
+            if options.srplogin ~= '' and options.srppass ~= '' then
+                sql = string.format("replace into %s (idx, login, password) values (%d, '%s', '%s')", 
+                                    AUTH_TBL, 0, options.srplogin, options.srppass)
+                db:exec(sql)
+            end
+        else
+            err = AUTH_TBL
+        end
+
+        if check_table(db, CONFIG_VAP_TBL) then
+            sql = nil
+            if options.ssid ~= '' and options.password ~= '' then
+                sql = string.format("replace into %s (idx, ssid, password, security_mode) values (%d, '%s', '%s', '%s')",
+                                    CONFIG_VAP_TBL, 0, options.ssid, options.password, options.encrypt)
+            elseif options.ssid ~= '' then
+                sql = string.format("replace into %s (idx, ssid, security_mode) values (%d, '%s', '%s')",
+                                    CONFIG_VAP_TBL, 0, options.ssid, options.encrypt)
+            elseif options.password ~= '' then
+                sql = string.format("replace into %s (idx, password) values (%d, '%s')",
+                                    CONFIG_VAP_TBL, 0, options.password)
+            end
+            if sql ~= nil then
+                db:exec(sql)
+            end
+        else
+            err = CONFIG_VAP_TBL
+        end
+        db:close()
+    else
+        err = CLIENT_DB
+    end
+
+    if err then
+        print(prog_name .. " error: " .. err .. " is not existed")
+        os.exit(1)
+    end
+end
+
+local function create_tables()
+    if not check_db(CLIENT_DB) then
+        lfs.mkdir(CLIENT_DIR)
+    end
+    local db = sqlite3.open(CLIENT_DB)
+
+    -- Auth table
+    local sql = string.format("CREATE TABLE IF NOT EXISTS %s (idx INTEGER, login CHAR, password CHAR)", AUTH_TBL)
+    db:exec(sql)
+    sql = string.format("CREATE UNIQUE INDEX IF NOT EXISTS idx_auth_idx on %s(idx)", AUTH_TBL)
+    db:exec(sql)
+
+    -- Pre auth table
+    sql = string.format("CREATE TABLE IF NOT EXISTS %s (idx INTEGER, login CHAR, password CHAR)", PRE_AUTH_TBL)
+    db:exec(sql)
+    sql = string.format("CREATE UNIQUE INDEX IF NOT EXISTS idx_pre_auth_idx on %s(idx)", PRE_AUTH_TBL)
+    db:exec(sql)
+
+    -- Config VAP table
+    sql = string.format("CREATE TABLE IF NOT EXISTS %s (idx INTEGER, ssid CHAR, password CHAR, security_mode CHAR)", CONFIG_VAP_TBL)
+    db:exec(sql)
+    sql = string.format("CREATE UNIQUE INDEX IF NOT EXISTS idx_config_vap_idx on %s(idx)", CONFIG_VAP_TBL)
+    db:exec(sql)
+
+    db:close()
+end
+
+cli:set_name(prog_name)
+
+cli
+    :command('json', 'Save the contents of client.sql as json format')
+    :option('-o,--output=/dev/console', 'output file', '/dev/console')
+    :action(function(options)
+        db_to_json(options.output)
+    end)
+
+cli
+    :command('syscfg', 'Sync configuration info between client.sql and syscfg')
+    :option('-d,--direction=out', 'Sync direction', 'out')
+    :action(function(options)
+        sync_db_syscfg(options.direction)
+    end)
+
+cli
+    :command('update', 'Update config_vap info to the client.sql')
+    :option('-s,--ssid=SSID', 'SSID', '')
+    :option('-p,--password=Password', 'Password', '')
+    :option('-e,--encrypt=Security', 'Encrypt', 'wpa2-personal')
+    :option('-l,--srplogin=Srplogin', 'Srplogin', '')
+    :option('-a,--srppass=Srppass', 'Srppass', '')
+    :action(function(options)
+        update_config_vap(options)
+    end)
+
+cli
+    :command('create', 'Create the default table of client.sql')
+    :action(function()
+        create_tables()
+    end)
+
+local args, err = cli:parse()
+
+if not args and err then
+    print(err)
+    os.exit(1)
+elseif args then
+    print(prog_name .. ' with no command')
+end

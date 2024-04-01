@@ -1,0 +1,96 @@
+#!/bin/sh
+#
+# Copyright (c) 2014 The Linux Foundation. All rights reserved.
+#
+# The shebang above has an extra space intentially to avoid having
+# openwrt build scripts automatically enable this package starting
+# at boot.
+
+START=70
+
+support_bridge() {
+	#NSS support bridge acceleration
+	[ -d /sys/kernel/debug/ecm/ecm_nss_conntrack_notifier ] && return 0
+	#SFE don't support bridge acceleration
+	[ -d /sys/kernel/debug/ecm/ecm_sfe_conntrack_notifier ] && return 1
+}
+
+load_sfe() {
+	[ -d /sys/module/shortcut_fe ] || modprobe shortcut-fe
+	[ -d /sys/module/shortcut_fe_ipv6 ] || modprobe shortcut-fe-ipv6
+	[ -d /sys/module/shortcut_fe_drv ] || modprobe shortcut-fe-drv
+}
+
+load_ecm_with_sfe() {
+	[ -d /sys/module/ecm ] || {
+		load_sfe
+		modprobe ecm
+	}
+
+	support_bridge && {
+		sysctl -w net.bridge.bridge-nf-call-ip6tables=1
+		sysctl -w net.bridge.bridge-nf-call-iptables=1
+	}
+}
+
+load_ecm() {
+	[ -d /sys/module/ecm ] || insmod ecm
+    if [ `cat /etc/product` == "nodes" ] || [ `cat /etc/product` == "nodes-jr" ] ; then
+        sysctl -w net.bridge.bridge-nf-call-ip6tables=0
+        sysctl -w net.bridge.bridge-nf-call-iptables=0
+    else
+        sysctl -w net.bridge.bridge-nf-call-ip6tables=1
+        sysctl -w net.bridge.bridge-nf-call-iptables=1
+    fi
+}
+
+unload_ecm() {
+	#Do not rmmod ecm as it used by fpbypass module, and that is not necessary.
+	#[ -d /sys/module/ecm ] && rmmod ecm
+
+	sysctl -w net.bridge.bridge-nf-call-ip6tables=0
+	sysctl -w net.bridge.bridge-nf-call-iptables=0
+}
+
+start() {
+	PRODUCT=`cat /etc/product`
+        if [ $PRODUCT = "civic" -o $PRODUCT = "dallas" ] || [ `cat /etc/product` == "rogue" ] || [ `cat /etc/product` == "lion" ] ; then
+		load_ecm_with_sfe
+		support_bridge
+        else    
+		load_ecm
+        fi
+        if [ `cat /etc/product` == "nodes" ] || [ `cat /etc/product` == "nodes-jr" ] ; then
+        	echo 'net.bridge.bridge-nf-call-ip6tables=0' >> /tmp/qca-nss-ecm.conf
+        	echo 'net.bridge.bridge-nf-call-iptables=0' >> /tmp/qca-nss-ecm.conf
+        else
+        	echo 'net.bridge.bridge-nf-call-ip6tables=1' >> /tmp/qca-nss-ecm.conf
+        	echo 'net.bridge.bridge-nf-call-iptables=1' >> /tmp/qca-nss-ecm.conf
+        fi
+}
+
+stop() {
+	unload_ecm
+	
+    if [ `cat /etc/product` == "nodes" ] || [ `cat /etc/product` == "nodes-jr" ] ; then
+        sed '/net.bridge.bridge-nf-call-ip6tables=0/d' -i /tmp/qca-nss-ecm.conf
+        sed '/net.bridge.bridge-nf-call-iptables=0/d' -i /tmp/qca-nss-ecm.conf
+    else
+        sed '/net.bridge.bridge-nf-call-ip6tables=1/d' -i /tmp/qca-nss-ecm.conf
+        sed '/net.bridge.bridge-nf-call-iptables=1/d' -i /tmp/qca-nss-ecm.conf
+    fi
+}
+# since we don't source /etc/rc.common (openwrt), extra case{} is added here.
+case "$1" in
+	start)
+            start
+		;;
+
+	stop)
+            stop
+		;;
+
+	restart|force-reload)
+		;;
+
+esac

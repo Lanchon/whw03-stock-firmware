@@ -1,0 +1,70 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish nodes steering command to an MQTT topic
+#
+# To see the incoming data on the broker, use this command:
+#   $ mosquitto_sub -t /network/+/BH/status -d
+#
+
+# Set common values
+source /etc/init.d/sub_pub_funcs.sh
+source /etc/init.d/service_wifi/wifi_steer_util.sh
+
+PROG_NAME="$(basename $0)"
+usage()
+{
+    echo "$PROG_NAME [client_mac] [ap_bssid] [ap_channel]"
+    exit 1
+}
+
+PUB_TOPIC="$(omsg-conf -f /etc/subscriber.d/slave.subs NODES_STEERING_START)"
+
+if [ -z "$PUB_TOPIC" ]; then
+    PUB_TOPIC="network/master/cmd/nodes_steering_start"
+fi
+
+validate PUB_TOPIC
+
+CLNT="$1"
+TARGET_BSSID="$2"
+TARGET_CHANNEL="$3"
+TARGET_UUID="$(mac_to_uuid $TARGET_BSSID)"
+
+if [ "$DEBUG" = "1" ];then
+    echo "Options:"
+    echo "   BIND_ADDR:      $BIND_ADDR"
+    echo "   HOST_PORT:      $HOST_PORT"
+    echo "   HOST_ADDR:      $HOST_ADDR"
+    echo "   TOPIC:          $PUB_TOPIC"
+    echo "   STATUS:         $STATUS"
+    echo "   CLNT:           $CLNT"
+    echo "   TARGET_BSSID:   $TARGET_BSSID"
+    echo "   TARGET_CHANNEL: $TARGET_CHANNEL"
+    echo "   TARGET_UUID:    $TARGET_UUID"
+fi
+
+if [ "$TARGET_CHANNEL" = "auto" ]; then
+    TARGET_CHANNEL="$(bssid_chan $TARGET_BSSID)"
+    if [ -n "$TARGET_CHANNEL" ]; then
+        echo "   TARGET_CHANNEL: $TARGET_CHANNEL (calculated)"
+    else
+        echo "$PROG_NAME Error: Could not auto-calculate channel"
+        exit 1
+    fi
+fi
+
+[ -z "$CLNT" -o -z "$TARGET_BSSID" -o -z "$TARGET_CHANNEL" ] && usage
+
+if [ -z "$TARGET_UUID" ];then
+    echo "$PROG_NAME Warning: Could not determine UUID for BSSID '$TARGET_BSSID'"
+fi
+
+mk_infra_payload \
+    -t cmd \
+    -s "client_bssid:$CLNT" \
+    -s "ap_bssid:$TARGET_BSSID" \
+    -s "ap_uuid:$TARGET_UUID" \
+    -s "ap_channel:$TARGET_CHANNEL" | \
+      publish $PUB_TOPIC

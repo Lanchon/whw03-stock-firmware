@@ -1,0 +1,33 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publlsh FWUPD: Slave status & request
+#
+
+# Set common values
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+PUB_TOPIC="network/${TOPIC_UUID}/FWUPD/status"
+validate PUB_TOPIC
+
+if [ $DEBUG ];then
+    echo "$0 Options:"
+    echo "   BIND_ADDR: '$BIND_ADDR'"
+    echo "   HOST_PORT: '$HOST_PORT'"
+    echo "   HOST_ADDR: '$HOST_ADDR'"
+    echo "   TOPIC:     '$PUB_TOPIC'"
+fi
+
+LAN_IF="$(syscfg get lan_ifname)"
+validate LAN_IF
+
+IP="$(if_to_ip $LAN_IF)"
+validate IP
+
+mk_infra_payload \
+    -t status \
+    -u "$UUID" \
+    $@ | \
+       publish "$PUB_TOPIC"

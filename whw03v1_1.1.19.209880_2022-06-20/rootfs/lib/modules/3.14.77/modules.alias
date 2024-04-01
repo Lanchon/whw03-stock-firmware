@@ -1,0 +1,25 @@
+# Aliases extracted from modules themselves.
+alias crypto-cmac cmac
+alias cmac cmac
+alias crypto-hmac hmac
+alias hmac hmac
+alias crypto-md4 md4
+alias md4 md4
+alias crypto-md5 md5
+alias md5 md5
+alias crypto-sha1-generic sha1_generic
+alias sha1-generic sha1_generic
+alias crypto-sha1 sha1_generic
+alias sha1 sha1_generic
+alias crypto-des3_ede-generic des_generic
+alias des3_ede-generic des_generic
+alias crypto-des3_ede des_generic
+alias des3_ede des_generic
+alias crypto-des-generic des_generic
+alias des-generic des_generic
+alias crypto-des des_generic
+alias des des_generic
+alias crypto-authenc authenc
+alias authenc authenc
+alias crypto-authencesn authencesn
+alias authencesn authencesn

@@ -1,0 +1,46 @@
+#!/bin/sh
+#
+# Copyright (c) 2016, Belkin Inc. All rights reserved.
+#
+# Publish some auto-channel configuration to master
+
+source /etc/init.d/ulog_functions.sh
+source /etc/init.d/sub_pub_funcs.sh
+
+MODE=$(syscfg get smart_mode::mode)
+UNCONFIGURED_MODE=0
+MASTER_MODE=2
+SLAVE_MODE=1
+if [ "$MODE" != "$MASTER_MODE" ];then
+	echo "pub_autochannel_config: not in master mode,exit"
+	exit
+fi
+
+SLAVE_UUID=$1
+SLAVE_QUIET=$2
+if [ -z $SLAVE_UUID ] ||  [ -z $SLAVE_QUIET ] ;then
+	echo "pub_autochannel_config: missing input $1 $2"
+    exit
+fi
+
+
+PUB_TOPIC="network/${SLAVE_UUID}/AC/config"
+
+
+
+if [ $DEBUG ];then
+    echo "Options:"
+    echo "   BIND_ADDR: $BIND_ADDR"
+    echo "   HOST_PORT: $HOST_PORT"
+    echo "   HOST_ADDR: $HOST_ADDR"
+    echo "   TOPIC    : $PUB_TOPIC"
+    echo "   STATUS   : $STATUS"
+fi
+
+echo "publish auto-channel config"
+
+mk_infra_payload \
+    -t set \
+    -u "$SLAVE_UUID" \
+    -s "quiettime:$SLAVE_QUIET" | \
+     publish "$PUB_TOPIC"

@@ -1,0 +1,380 @@
+#!/bin/sh
+#
+# porter - Assist with Node onboarding.
+#
+# Version 0.1.0
+#
+# by dash
+
+# Default values
+USERNAME="admin"
+INTERFACE="lo"
+SILENT="--silent"
+IPADDR="localhost"
+PORT=""
+# See if there's an admin password in syscfg & use it if present
+PASSWORD="$(syscfg get device::admin_password)"
+PASSWORD="${PASSWORD:-admin}"
+
+OP=""
+OP_SERVE="serve"
+OP_ONBOARDME="onboardme"
+OP_MODE="mode"
+# Request SmartConnectClient Phase2 to client
+OP_START_SCC_P2="startscc_p2"
+OP_DETACH_SCC_P2="detachscc_p2"
+OP_GET_PIN="get_pin"
+OP_GET_SSID="get_ssid"
+OP_GET_RESULT="get_result"
+OP_GET_SCC_DEVICEINFO="get_scc_deviceinfo"
+OP_ENABLE_BT_AUTO_ONBO="enable_bt_auto_onbo"
+OP_DISABLE_BT_AUTO_ONBO="disable_bt_auto_onbo"
+OP_ENABLE_WIRED_AUTO_ONBO="enable_wired_auto_onbo"
+OP_DISABLE_WIRED_AUTO_ONBO="disable_wired_auto_onbo"
+
+GET_PIN_COMMAND="smartconnect/GetSmartConnectPIN"
+GET_MODE_COMMAND="smartmode/GetDeviceMode"
+SET_MODE_COMMAND="smartmode/SetDeviceMode"
+GET_SSID_COMMAND="smartconnect/GetSetupAP"
+START_SMART_CONNECT_CLIENT_COMMAND="smartconnect/StartSmartConnectClient"
+START_SMART_CONNECT_CLIENT_COMMAND_P2="StartSmartConnectClient"
+DETACH_SMART_CONNECT_CLIENT_COMMAND_P2="Detach"
+START_SMART_CONNECT_SERVER_COMMAND="smartconnect/StartSmartConnectServer"
+GET_SMART_CONNECT_STATUS_COMMAND="smartconnect/GetSmartConnectStatus"
+GET_SCC_DEVICEINFO_COMMAND="GetClientDeviceInfo"
+
+# XConnect
+OP_START_XCONNECT_SURVEY="start_xconnect_survey"
+OP_GET_XCONNECT_AP_LIST="get_xconnect_ap_list"
+OP_GET_XCONNECT_SURVEY="get_xconnect_survey"
+OP_GET_XCONNECT_SURVEY_NEXT="get_xconnect_survey_next"
+OP_START_XCONNECT_CLIENT="start_xconnect_client"
+REQ_XCONNECT_SURVEY="RequestSmartConnectSurvey"
+GET_XCONNECT_SURVEY_RESULT="GetSmartConnectSurveyResult"
+GET_XCONNECT_SURVEY_RESULT_NEXT="GetSmartConnectNextResult"
+REQ_ONBOARD_XCONNECT_CLIENT="RequestOnboardSmartConnectClient"
+
+
+SET_BT_AUTO_ONBO_SETTINGS_COMMAND="autoonboarding/SetBluetoothAutoOnboardingSettings"
+START_BT_AUTO_ONBO_COMMAND="autoonboarding/StartBluetoothAutoOnboarding"
+SET_WIRED_AUTO_ONBO_SETTINGS_COMMAND="autoonboarding/SetWiredAutoOnboardingSettings"
+
+# auto-onboarding payloads
+AUTO_ONBOARD_DISABLE='"isAutoOnboardingEnabled":false'
+AUTO_ONBOARD_ENABLE='"isAutoOnboardingEnabled":true'
+
+PROGNAME=$(basename $0)
+
+usage() {
+    cat <<-EOF
+	Porter can be used for the following:
+	 - Determining a Node's setup SSID
+	 - Determing a Node's setup PIN
+	 - Starting the smart-connect client
+	 - Starting the smart-connect server
+	More info can be found on porter's wiki page here:
+	   https://wiki.belkin.com/x/W9O2BQ
+EOF
+    printf "Usage:\n"
+    printf "        %s {options}\n" $PROGNAME
+    echo "Where {options} are one or more of:"
+    printf "  -m {mode}   Set mode to master or slave\n"
+#   printf "  -n          Dry-run; show what would be done but don't do it\n"
+    printf "  -p          get setup PIN\n"
+    printf "  -P {pin}    set setup PIN\n"
+    printf "  -s          get setup SSID\n"
+    printf "  -S {SSID}   set setup SSID\n"
+    printf "  -h          This help\n"
+    printf "  -i {IP}     Device IP address (required)\n"
+    printf "  -c          connect/onboard me (requires -S SSID or -W)\n"
+    printf "  -a          Accept clients (requires -P pin)\n"
+    printf "  -o          Enable & start BT auto-onboarding\n"
+    printf "  -O          Disable BT auto-onboarding\n"
+    printf "  -q          Enable wired auto-onboarding\n"
+    printf "  -Q          Disable wired auto-onboarding\n"
+    printf "  -u {user}   User (default $USERNAME)\n"
+    printf "  -w {pass}   Password (default $PASSWORD)\n"
+    printf "  -b {intf}   Binding interface (default $INTERFACE)\n"
+    printf "  -W          Enable Wired mode (with -c only)\n"
+    printf "  -g          Get SmartConnect Phase2 client device info\n"
+    printf "  -C          Request SmartConnectClient Phase2 to client (requires -S SSID and -P PIN)\n"
+    printf "  -X          Discontinue communication with unconfigured SmartConnect Phase2 client\n"
+    printf "  -t {port}   Port number (default 80)\n"
+    printf "  -r          Get progress result(status) (require -P pin)\n"
+    printf "  -L          Start XConnect survey\n"
+    printf "  -l          Get XConnect discoverd AP list\n"
+    printf "  -J          Get next XConnect survey result\n"
+    printf "  -j          Onboard XConnect client\n"
+}
+
+while getopts ":ab:cCdghi:jJlLm:noOpP:qQrsS:t:u:w:WX" opt;do
+    case $opt in
+        a) OP=$OP_SERVE ;;
+        b) INTERFACE=$OPTARG ;;
+        c) OP=$OP_ONBOARDME ;;
+        C) OP=$OP_START_SCC_P2 ;;
+        X) OP=$OP_DETACH_SCC_P2 ;;
+        d) DEBUG=1 ;;
+        l) OP=$OP_GET_XCONNECT_AP_LIST;;
+        L) OP=$OP_START_XCONNECT_SURVEY;;
+        j) OP=$OP_START_XCONNECT_CLIENT;;
+        J) OP=$OP_GET_XCONNECT_SURVEY_NEXT;;
+        h) usage ; exit 0 ;;
+        i) IPADDR=$OPTARG ;;
+        m) MODE=$OPTARG ; OP=$OP_MODE ;;
+        n) FAKE="echo " ;;
+        o) OP=$OP_ENABLE_BT_AUTO_ONBO ;;
+        O) OP=$OP_DISABLE_BT_AUTO_ONBO ;;
+        q) OP=$OP_ENABLE_WIRED_AUTO_ONBO ;;
+        Q) OP=$OP_DISABLE_WIRED_AUTO_ONBO ;;
+        P) PIN=$OPTARG ;;
+        p) OP=$OP_GET_PIN ;;
+        r) OP=$OP_GET_RESULT ;;
+        S) SSID=$OPTARG ;;
+        s) OP=$OP_GET_SSID ;;
+        t) PORT=$OPTARG ;;
+        u) USERNAME=$OPTARG ;;
+        w) PASSWORD=$OPTARG ;;
+        W) WIRED=1 ;;
+        g) OP=$OP_GET_SCC_DEVICEINFO ;;
+        \?)
+           echo "Invalid option: -$OPTARG" >&2
+           usage
+           exit 1
+           ;;
+        :)
+           echo "Option -${OPTARG} needs an argument." >&2
+           usage
+           exit 1
+           ;;
+    esac
+done
+shift $((OPTIND-1))
+
+# Check for valid command & option combos
+if [ -z "$IPADDR" ]; then
+    echo "Error: IP address (-i) required"
+    usage
+    exit 1
+fi
+
+if [ -n "$DEBUG" ]; then
+    unset SILENT
+fi
+
+# $1: COMMAND
+# $2: DATA
+# $3: service (optional; defaults to "nodes")
+curler() {
+    # [ -n "$DEBUG" ] && echo "AUTH_TOKEN: \"${AUTH_TOKEN}\""
+    COMMAND="$1"
+    DATA="{$2}"
+    if [ -z "$PORT" ]; then
+        DESTINATION="${IPADDR}"
+    else
+        DESTINATION="${IPADDR}:${PORT}"
+    fi
+    SERVICE="${3:-nodes}"
+    [ "$DEBUG" ] && echo "Sending payload: \"$DATA\""
+    $FAKE curl $SILENT \
+         --insecure \
+         --interface ${INTERFACE} \
+         --connect-timeout 3 \
+         --location "http://${DESTINATION}/JNAP/" \
+         -d "$DATA" \
+         -H "X-JNAP-ACTION: http://linksys.com/jnap/${SERVICE}/${COMMAND}" \
+         -H "X-JNAP-Authorization: Basic ${AUTH_TOKEN}"
+}
+
+#curler $COMMAND
+AUTH_TOKEN="$(echo -n "${USERNAME}:${PASSWORD}" | base64)"
+
+set_mode() {
+    echo "\$1: \"$1\", \$2: \"$2\", \$3: \"$3\""
+    MODE="$1"
+    MODE="$(echo ${MODE:0:1} | tr '[a-z]' '[A-Z]')""$(echo ${MODE:1} | tr '[A-Z]' '[a-z]')"
+    DATA="\"mode\":\"${MODE}\""
+    echo "curler $SET_MODE_COMMAND \"$DATA\""
+    curler $SET_MODE_COMMAND "$DATA"
+}
+
+get_mode() {
+    curler $GET_MODE_COMMAND | \
+        grep '"mode":' | cut -f2 -d: | cut -f2 -d\"
+}
+
+get_pin() {
+    [ "$DEBUG" ] && echo "Getting pin..."
+    curler $GET_PIN_COMMAND| \
+        grep '"pin":' | cut -f2 -d: | cut -f2 -d\"
+}
+
+get_ssid() {
+    curler $GET_SSID_COMMAND | \
+        grep '"setupAP":' | cut -f2 -d: | cut -f2 -d\"
+}
+
+get_scc_deviceinfo() {
+    curler $GET_SCC_DEVICEINFO_COMMAND "" "smartconnect"
+}
+
+# Create single string from provided arguments by joining them
+# together separated by commas & newlines
+add_opt() {
+    ACC=""
+    if [ $# -gt 0 ]; then
+        ACC="$1"
+        shift 1
+        for i in $*; do
+            if [ -n "$i" ]; then
+                if [ -n "$ACC" ]; then
+                    ACC="$(printf "%s,\n%s" "$ACC" "$i")"
+                else
+                    ACC="$i"
+                fi
+            fi
+        done
+    fi
+    echo "$ACC"
+}
+
+serve() {
+    if [ -z "$PIN" ]; then
+        echo "Error: Running smart connect server requires PIN"
+        usage
+        exit 1
+    fi
+    DATA="\"pin\":\"$PIN\""
+    [ -n "$WIRED" ] && DATA="$(add_opt "$DATA" "\"wiredEnabled\":true")"
+    curler $START_SMART_CONNECT_SERVER_COMMAND "$DATA"
+}
+
+onboardme() {
+    if [ -z "$SSID"  -a -z "$WIRED" ]; then
+        echo "Error: Connecting to smart connect server requires setup SSID or -W"
+        usage
+        exit 1
+    fi
+    DATA=""
+    [ -n "$SSID" ]  && DATA="$(add_opt "$DATA" "\"setupAP\":\"$SSID\"")"
+    [ -n "$WIRED" ] && DATA="$(add_opt "$DATA" "\"wiredEnabled\":true")"
+    curler $START_SMART_CONNECT_CLIENT_COMMAND "$DATA"
+}
+
+startscc_p2() {
+    if [ -z "$SSID" -o -z "$PIN" ]; then
+        echo "Error: Request to StartSmartConnectClient requires setup SSID and PIN"
+        usage
+        exit 1
+    fi
+    [ -n "$SSID" ] && DATA="$(add_opt "$DATA" "\"serverSSID\":\"$SSID\"")"
+    [ -n "$PIN" ] && DATA="$(add_opt "$DATA" "\"setupPIN\":\"$PIN\"")"
+    curler $START_SMART_CONNECT_CLIENT_COMMAND_P2 "$DATA" "smartconnect"
+}
+
+detachscc_p2() {
+    curler $DETACH_SMART_CONNECT_CLIENT_COMMAND_P2 "" "smartconnect"
+}
+
+get_result() {
+    if [ -z "$PIN" ]; then
+        echo "Error: To get status of setup progress, requires PIN"
+        usage
+        exit 1
+    fi
+    DATA="\"pin\":\"$PIN\""
+    curler $GET_SMART_CONNECT_STATUS_COMMAND "$DATA"
+}
+
+if [ -n "$DEBUG" ]; then
+    echo "$PROG_NAME Current values:"
+    echo "    USERNAME:  \"$USERNAME\""
+    echo "    PASSWORD:  \"$PASSWORD\""
+    echo "    AUTH_TOKEN:\"${AUTH_TOKEN}\""
+    echo "    INTERFACE: \"$INTERFACE\""
+    echo "    IPADDR:    \"$IPADDR\""
+    echo "    MODE:      \"$MODE\""
+    echo "    OP:        \"$OP\""
+    echo "    WIRED:     \"$WIRED\""
+fi
+
+enable_bt_auto_onbo () {
+    curler $SET_BT_AUTO_ONBO_SETTINGS_COMMAND $AUTO_ONBOARD_ENABLE
+    curler $START_BT_AUTO_ONBO_COMMAND ''
+    exit 0
+}
+
+disable_bt_auto_onbo () {
+    curler $SET_BT_AUTO_ONBO_SETTINGS_COMMAND $AUTO_ONBOARD_DISABLE
+    exit 0
+}
+
+enable_wired_auto_onbo () {
+    curler $SET_WIRED_AUTO_ONBO_SETTINGS_COMMAND $AUTO_ONBOARD_ENABLE
+    exit 0
+}
+
+disable_wired_auto_onbo () {
+    curler $SET_WIRED_AUTO_ONBO_SETTINGS_COMMAND $AUTO_ONBOARD_DISABLE
+    exit 0
+}
+
+start_xconnect_survey(){
+    echo "Starting XConnect site survey.."
+    curler $REQ_XCONNECT_SURVEY "" "xconnect"
+}
+
+get_xconnect_ap_list(){
+    AP_LIST="/tmp/sc_data/discovered_aps"
+    if [ ! -e "$AP_LIST" ]; then
+        echo "Error: No discovered AP list, please do scan first!"
+        exit 1
+    fi
+    cat "$AP_LIST"
+}
+
+get_xconnect_survey_next(){
+    echo "Getting XConnect next survey result.."
+    curler $GET_XCONNECT_SURVEY_RESULT_NEXT "" "xconnect"
+}
+
+start_xconnect_client(){
+    AP_LIST="/tmp/sc_data/discovered_aps"
+    INDEX=`sysevent get smart_connect::current_device`
+    INDEX=`expr $INDEX + 1`
+    ENTRY="`jsonparse -i0 APs < $AP_LIST | cut -f $INDEX -d '{' | tr -d '\",[]{}'`"
+    BSSID="`echo $ENTRY | awk '{print $2}'`"
+
+    echo "Onboarding current client: \"$BSSID\""
+    DATA="\"bssid\":\"$BSSID\""
+    curler $REQ_ONBOARD_XCONNECT_CLIENT "$DATA" "xconnect"
+}
+
+case $OP in
+    $OP_GET_PIN)   get_pin ;;
+    $OP_GET_SSID)  get_ssid ;;
+    $OP_MODE)      set_mode $MODE ;;
+    $OP_SERVE)     serve ;;
+    $OP_ONBOARDME) onboardme ;;
+    $OP_GET_RESULT) get_result ;;
+    $OP_GET_SCC_DEVICEINFO) get_scc_deviceinfo ;;
+    $OP_START_SCC_P2) startscc_p2 ;;
+    $OP_DETACH_SCC_P2) detachscc_p2 ;;
+    $OP_ENABLE_BT_AUTO_ONBO) enable_bt_auto_onbo ;;
+    $OP_DISABLE_BT_AUTO_ONBO) disable_bt_auto_onbo ;;
+    $OP_ENABLE_WIRED_AUTO_ONBO) enable_wired_auto_onbo ;;
+    $OP_DISABLE_WIRED_AUTO_ONBO) disable_wired_auto_onbo ;;
+    $OP_START_XCONNECT_SURVEY)  start_xconnect_survey ;;
+    $OP_GET_XCONNECT_AP_LIST)  get_xconnect_ap_list ;;
+    $OP_GET_XCONNECT_SURVEY_NEXT)  get_xconnect_survey_next ;;
+    $OP_START_XCONNECT_CLIENT)  start_xconnect_client ;;
+    "")
+        echo "Nothing to do"
+        usage
+        exit 0
+        ;;
+    *)
+        echo "Error unknown operation \"$OP\"."
+        exit 1
+        ;;
+esac

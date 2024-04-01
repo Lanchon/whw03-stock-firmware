@@ -1,0 +1,18 @@
+#!/bin/sh
+
+. /etc/init.d/queue_common.sh
+
+if [ "$#" -lt 1 ]; then
+    echo "Usage: $PROG_NAME name [value]"
+    exit 1
+fi
+
+if [ $# \> 1 ]; then
+    EVENT="$1=$2"
+else
+    EVENT="$1"
+fi
+
+enqueue "$EVENT"
+
+exit 0
